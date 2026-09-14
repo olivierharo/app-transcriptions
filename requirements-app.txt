@@ -18,5 +18,10 @@ whisperx>=3.8
 # Interface et capture audio
 PySide6>=6.7
 sounddevice>=0.5
+
+# Capture du son du PC (loopback WASAPI, mode "micro + systeme").
+# Indispensable : sounddevice ne sait PAS faire de loopback, sa classe
+# WasapiSettings n'expose que exclusive / auto_convert / explicit_sample_format.
+PyAudioWPatch>=0.2.12
 numpy
 av

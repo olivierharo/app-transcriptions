@@ -25,40 +25,77 @@ SR_CIBLE = 16000
 # --------------------------------------------------------------------------- #
 # Peripheriques
 # --------------------------------------------------------------------------- #
-def peripheriques_entree():
-    """Micros disponibles : [{'id', 'nom', 'canaux', 'sr'}]."""
+def _lister(sortie=False):
+    """Peripheriques d'entree ou de sortie, avec leur API hote."""
+    apis = sd.query_hostapis()
+    cle = "max_output_channels" if sortie else "max_input_channels"
     res = []
     for i, d in enumerate(sd.query_devices()):
-        if d["max_input_channels"] > 0:
-            res.append({"id": i, "nom": d["name"],
-                        "canaux": d["max_input_channels"],
-                        "sr": int(d["default_samplerate"])})
+        if d[cle] > 0:
+            res.append({"id": i, "nom": d["name"], "api": apis[d["hostapi"]]["name"],
+                        "canaux": d[cle], "sr": int(d["default_samplerate"])})
     return res
 
 
+def peripheriques_entree():
+    """Micros. On privilegie WASAPI (liste propre, faible latence) ; sinon tout."""
+    tous = _lister(sortie=False)
+    return [d for d in tous if d["api"] == "Windows WASAPI"] or tous
+
+
 def peripheriques_sortie():
-    """Sorties (haut-parleurs/casque) captables en boucle WASAPI."""
+    """Sorties captables en boucle (loopback WASAPI), via PyAudioWPatch.
+
+    sounddevice ne sait pas faire de loopback : sa classe WasapiSettings
+    n'expose que exclusive / auto_convert / explicit_sample_format.
+    """
     res = []
-    for i, d in enumerate(sd.query_devices()):
-        if d["max_output_channels"] > 0:
-            res.append({"id": i, "nom": d["name"],
-                        "canaux": d["max_output_channels"],
-                        "sr": int(d["default_samplerate"])})
+    try:
+        import pyaudiowpatch as pa
+    except ImportError:
+        return res
+    p = pa.PyAudio()
+    try:
+        for d in p.get_loopback_device_info_generator():
+            res.append({"id": int(d["index"]), "nom": d["name"], "api": "WASAPI loopback",
+                        "canaux": int(d["maxInputChannels"]),
+                        "sr": int(d["defaultSampleRate"])})
+    finally:
+        p.terminate()
     return res
 
 
 def peripherique_defaut_entree():
-    try:
-        return sd.default.device[0]
-    except Exception:
+    liste = peripheriques_entree()
+    if not liste:
         return None
+    try:
+        d = sd.default.device[0]
+        if any(x["id"] == d for x in liste):
+            return d
+    except Exception:
+        pass
+    return liste[0]["id"]
 
 
 def peripherique_defaut_sortie():
-    try:
-        return sd.default.device[1]
-    except Exception:
+    liste = peripheriques_sortie()
+    if not liste:
         return None
+    try:
+        import pyaudiowpatch as pa
+        p = pa.PyAudio()
+        try:
+            nom = p.get_device_info_by_index(
+                p.get_host_api_info_by_type(pa.paWASAPI)["defaultOutputDevice"])["name"]
+        finally:
+            p.terminate()
+        for d in liste:
+            if nom in d["nom"]:
+                return d["id"]
+    except Exception:
+        pass
+    return liste[0]["id"]
 
 
 # --------------------------------------------------------------------------- #
@@ -75,14 +112,6 @@ class _Piste:
         self.niveau = 0.0          # amplitude recente, pour le vumetre
         self._lock = threading.Lock()
 
-    def _extra(self):
-        if not self.loopback:
-            return None
-        try:
-            return sd.WasapiSettings(loopback=True)
-        except Exception:
-            return None            # non-Windows ou sounddevice trop ancien
-
     def demarrer(self):
         infos = sd.query_devices(self.device)
         natif = int(infos["default_samplerate"])
@@ -92,7 +121,6 @@ class _Piste:
                 stream = sd.InputStream(
                     device=self.device, channels=1, samplerate=sr,
                     dtype="int16", blocksize=0, callback=self._callback,
-                    extra_settings=self._extra(),
                 )
                 stream.start()
                 self.stream, self.sr = stream, sr
@@ -161,6 +189,100 @@ def _reechantillonner(chemin, sr_cible=SR_CIBLE):
             pass
 
 
+
+class _PisteLoopback:
+    """Capture du son sortant du PC (WASAPI loopback), via PyAudioWPatch.
+
+    Le loopback impose le format natif du peripherique de sortie (souvent
+    48 kHz stereo) : on enregistre tel quel, puis _reechantillonner ramene
+    le tout en mono 16 kHz.
+    """
+
+    def __init__(self, chemin, index):
+        self.chemin = chemin
+        self.index = index
+        self.pa = None
+        self.stream = None
+        self.wav = None
+        self.sr = SR_CIBLE
+        self.canaux = 1
+        self.niveau = 0.0
+        self.t0 = None          # horloge de reference
+        self.ecrits = 0         # echantillons ecrits (par canal)
+        self._lock = threading.Lock()
+
+    def demarrer(self):
+        import pyaudiowpatch as pa
+        self.pa = pa.PyAudio()
+        infos = self.pa.get_device_info_by_index(self.index)
+        self.canaux = int(infos["maxInputChannels"])
+        self.sr = int(infos["defaultSampleRate"])
+
+        self.wav = wave.open(self.chemin, "wb")
+        self.wav.setnchannels(self.canaux)
+        self.wav.setsampwidth(2)
+        self.wav.setframerate(self.sr)
+
+        self.t0 = time.time()
+        self.stream = self.pa.open(
+            format=pa.paInt16, channels=self.canaux, rate=self.sr,
+            input=True, input_device_index=self.index,
+            frames_per_buffer=1024, stream_callback=self._callback,
+        )
+        self.stream.start_stream()
+
+    def _combler(self, jusqu_a):
+        """Ecrit du silence pour rattraper l'horloge.
+
+        Le loopback ne delivre AUCUNE donnee tant que rien ne joue sur le PC.
+        Sans ce rattrapage, les silences du correspondant disparaissent et la
+        piste se desynchronise du micro, faussant l'attribution des tours.
+        """
+        manque = jusqu_a - self.ecrits
+        if manque > 0:
+            self.wav.writeframes(b"\x00" * (manque * self.canaux * 2))
+            self.ecrits += manque
+
+    def _callback(self, donnees, nb, infos, statut):
+        import pyaudiowpatch as pa
+        with self._lock:
+            if self.wav is not None:
+                attendu = int((time.time() - self.t0) * self.sr) - nb
+                self._combler(attendu)
+                self.wav.writeframes(donnees)
+                self.ecrits += nb
+                ech = np.frombuffer(donnees, dtype=np.int16)
+                if ech.size:
+                    self.niveau = float(np.abs(ech).mean()) / 32768.0
+        return (None, pa.paContinue)
+
+    def arreter(self):
+        if self.stream is not None:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except Exception:
+                pass
+            self.stream = None
+        if self.pa is not None:
+            try:
+                self.pa.terminate()
+            except Exception:
+                pass
+            self.pa = None
+        with self._lock:
+            if self.wav is not None:
+                if self.t0 is not None:
+                    self._combler(int((time.time() - self.t0) * self.sr))
+                self.wav.close()
+                self.wav = None
+        # Stereo 48 kHz -> mono 16 kHz
+        if self.sr != SR_CIBLE or self.canaux != 1:
+            _reechantillonner(self.chemin, SR_CIBLE)
+            self.sr, self.canaux = SR_CIBLE, 1
+        return self.chemin
+
+
 # --------------------------------------------------------------------------- #
 # Enregistreur
 # --------------------------------------------------------------------------- #
@@ -198,8 +320,8 @@ class Enregistreur:
         pistes = [_Piste(os.path.join(self.dossier, f"{base}.wav"), micro_id)]
         if systeme_id is not None:
             pistes[0].chemin = os.path.join(self.dossier, f"{base}.moi.wav")
-            pistes.append(_Piste(os.path.join(self.dossier, f"{base}.correspondant.wav"),
-                                 systeme_id, loopback=True))
+            pistes.append(_PisteLoopback(
+                os.path.join(self.dossier, f"{base}.correspondant.wav"), systeme_id))
 
         demarrees = []
         try:

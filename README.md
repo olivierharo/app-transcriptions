@@ -55,6 +55,16 @@ py -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+### Dossier des enregistrements
+
+Il se choisit **dans l'application** : bouton « Changer… » en haut de la fenetre.
+Le choix est memorise dans `%APPDATA%\Transcriptions\parametres.json`, donc il
+survit aux reconstructions de l'executable.
+
+Ordre de priorite : choix fait dans l'application, puis `DOSSIER_ENREGISTREMENTS`
+(fichier `.env` ou variable d'environnement), puis par defaut
+`%USERPROFILE%\Documents\Enregistrements audio`.
+
 ### Configuration
 
 ```bat

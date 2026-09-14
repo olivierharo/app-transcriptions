@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QTextEdit, QProgressBar, QGroupBox, QSplitter, QHeaderView, QMessageBox,
-    QAbstractItemView, QInputDialog,
+    QAbstractItemView, QInputDialog, QFileDialog,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -83,6 +83,7 @@ class Fenetre(QMainWindow):
         principal.setContentsMargins(12, 12, 12, 12)
         principal.setSpacing(10)
 
+        principal.addWidget(self._barre_dossier())
         principal.addWidget(self._bloc_enregistrement())
 
         split = QSplitter(Qt.Horizontal)
@@ -93,6 +94,49 @@ class Fenetre(QMainWindow):
 
         self.statut = self.statusBar()
         self.statut.showMessage(f"Dossier : {self.dossier}")
+
+    def _barre_dossier(self):
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(QLabel("Dossier des enregistrements :"))
+        self.label_dossier = QLabel(self.dossier)
+        self.label_dossier.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.label_dossier.setStyleSheet("color:#374151; font-weight:bold;")
+        h.addWidget(self.label_dossier, 1)
+        b = QPushButton("Changer…")
+        b.clicked.connect(self._changer_dossier)
+        h.addWidget(b)
+        return w
+
+    def _changer_dossier(self):
+        if self.enregistreur.en_cours:
+            QMessageBox.information(self, "Dossier",
+                                    "Enregistrement en cours : arretez-le d'abord.")
+            return
+        if self.proc is not None or self.file_attente:
+            QMessageBox.information(self, "Dossier",
+                                    "Transcription en cours : attendez la fin.")
+            return
+        choisi = QFileDialog.getExistingDirectory(
+            self, "Choisir le dossier des enregistrements", self.dossier)
+        if not choisi:
+            return
+        choisi = os.path.abspath(choisi)
+        if choisi == os.path.abspath(self.dossier):
+            return
+        try:
+            config.definir_dossier_enregistrements(choisi)
+            self.dossier = choisi
+            self.biblio = Bibliotheque(choisi)
+            self.enregistreur = enr.Enregistreur(choisi)
+        except Exception as ex:
+            QMessageBox.critical(self, "Dossier inutilisable", str(ex))
+            return
+        self.label_dossier.setText(choisi)
+        self.vue.clear()
+        self.rafraichir()
+        self.statut.showMessage("Dossier : " + choisi, 8000)
 
     def _bloc_enregistrement(self):
         boite = QGroupBox("Nouvel enregistrement")

@@ -15,8 +15,10 @@ Une fenêtre native qui couvre tout le cycle :
 - **lire** la transcription attribuée (`Olivier : … / Christian : …`).
 
 ```bat
-Application Transcriptions.bat
+Transcriptions.exe
 ```
+
+Fenetre native Qt, demarrage en ~2,5 s.
 
 ### Deux modes de capture
 
@@ -78,15 +80,34 @@ n'en a pas besoin.
 cd src && ..\.venv-whisperx\Scripts\python.exe -m app.moteur "audio.wav" --noms "Olivier,Christian"
 ```
 
+## Construire l'executable
+
+```bat
+.venv-whisperx\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed ^
+  --name Transcriptions --paths src --distpath dist --workpath build/pyinstaller --specpath build ^
+  --exclude-module torch --exclude-module whisperx --exclude-module transformers ^
+  --exclude-module matplotlib --exclude-module pandas --exclude-module scipy ^
+  lanceur.py
+```
+
+Puis copier `dist\Transcriptions.exe` **a la racine du projet** : l'application
+y cherche `src\` et `.venv-whisperx\`.
+
+L'executable (~82 Mo) n'embarque **pas** PyTorch : le moteur de transcription
+etant lance en sous-processus, il utilise l'environnement Python installe.
+C'est ce qui garde l'.exe leger et rapide a reconstruire.
+
 ## Structure
 
 ```
+Transcriptions.exe      l'application (genere par PyInstaller)
+lanceur.py              point d'entree pour PyInstaller
 src/
 ├── config.py           lecture du .env, chemins (aucun secret dans le code)
 ├── transcrire.py       transcription simple (faster-whisper)
 ├── surveiller.py       surveillance d'un dossier
 └── app/
-    ├── __main__.py     point d'entrée de l'application
+    ├── __main__.py     point d'entree en developpement (python -m app)
     ├── fenetre.py      interface PySide6
     ├── enregistreur.py capture audio 16 kHz mono, mono ou deux pistes
     ├── bibliotheque.py index des enregistrements et de leur état

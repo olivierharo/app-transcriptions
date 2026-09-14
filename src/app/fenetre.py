@@ -30,6 +30,29 @@ COULEURS_ETAT = {
 }
 
 
+
+def _racine():
+    """Racine du projet : dossier de l'.exe si gele, sinon parent de src/."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _python_moteur():
+    """Interpreteur qui execute le moteur de transcription.
+
+    Une fois l'application gelee par PyInstaller, sys.executable designe
+    l'.exe lui-meme : il faut pointer explicitement vers l'environnement
+    Python qui contient WhisperX.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    candidat = os.path.join(_racine(), ".venv-whisperx", "Scripts", "python.exe")
+    if os.path.exists(candidat):
+        return candidat
+    return os.environ.get("PYTHON_MOTEUR") or "python"
+
+
 class Fenetre(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -340,11 +363,11 @@ class Fenetre(QMainWindow):
         self.barre.setValue(0)
 
         self.proc = QProcess(self)
-        self.proc.setWorkingDirectory(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.proc.setWorkingDirectory(os.path.join(_racine(), "src"))
         self.proc.setProcessChannelMode(QProcess.SeparateChannels)
         self.proc.readyReadStandardOutput.connect(self._sortie_moteur)
         self.proc.finished.connect(self._moteur_termine)
-        self.proc.start(sys.executable, args)
+        self.proc.start(_python_moteur(), args)
 
     def _sortie_moteur(self):
         if not self.proc:

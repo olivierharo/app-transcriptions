@@ -98,29 +98,68 @@ def ecrire_dialogue(chemin, tours):
         f.write("\n\n".join(f"{loc} : {txt}" for loc, txt in tours) + "\n")
 
 
-def regrouper(segments, cle_locuteur, noms):
-    """Fusionne les segments consecutifs d'un meme locuteur en tours de parole."""
-    mapping, ordre = {}, []
-    tours, courant, tampon = [], None, []
+PONCTUATION = (",", ".", "!", "?", ";", ":", "...", "%")
+
+
+def _recoller(mots):
+    """Recolle des mots en texte lisible (espaces avant ponctuation, elisions)."""
+    texte = " ".join(m for m in mots if m)
+    for signe in PONCTUATION:
+        texte = texte.replace(" " + signe, signe)
+    texte = texte.replace("' ", "'").replace("’ ", "’")
+    return texte.strip()
+
+
+def _mots_localises(segments):
+    """Aplatit les segments en couples (locuteur, mot).
+
+    On utilise l'attribution AU MOT produite par l'alignement WhisperX.
+    Attribuer par segment reviendrait a voter a la majorite : une
+    replique courte ("oui", "j'en ai quelques-unes") tombant au milieu
+    d'un long segment serait absorbee par le locuteur bavard.
+    """
     for s in segments:
-        loc = cle_locuteur(s)
-        if loc not in mapping:
-            ordre.append(loc)
-            i = len(ordre) - 1
-            mapping[loc] = noms[i] if i < len(noms) else (loc or "?")
-        nom = mapping[loc]
-        txt = _texte_de(s)
-        if not txt:
-            continue
+        mots = s.get("words") or []
+        if mots:
+            for m in mots:
+                mot = (m.get("word") or "").strip()
+                if mot:
+                    yield (m.get("speaker") or s.get("speaker")), mot
+        else:
+            texte = _texte_de(s)
+            if texte:
+                yield s.get("speaker"), texte
+
+
+def regrouper(segments, noms=()):
+    """Construit les tours de parole, en attribuant les noms fournis
+    aux locuteurs dans leur ordre d'apparition."""
+    paires = list(_mots_localises(segments))
+
+    ordre = []
+    for loc, _ in paires:
+        if loc and loc not in ordre:       # les mots sans locuteur ne
+            ordre.append(loc)              # consomment pas un nom
+    noms = list(noms)
+    correspondance = {loc: (noms[i] if i < len(noms) else loc)
+                      for i, loc in enumerate(ordre)}
+
+    tours, courant, tampon, dernier = [], None, [], None
+    for loc, mot in paires:
+        if loc:
+            dernier = loc
+        else:
+            loc = dernier                  # mot orphelin : on prolonge le tour
+        nom = correspondance.get(loc, "?")
         if nom != courant:
             if tampon:
-                tours.append((courant, " ".join(tampon)))
-            courant, tampon = nom, [txt]
+                tours.append((courant, _recoller(tampon)))
+            courant, tampon = nom, [mot]
         else:
-            tampon.append(txt)
+            tampon.append(mot)
     if tampon:
-        tours.append((courant, " ".join(tampon)))
-    return tours
+        tours.append((courant, _recoller(tampon)))
+    return [(n, t) for n, t in tours if t]
 
 
 # --------------------------------------------------------------------------- #
@@ -132,13 +171,15 @@ def mode_deux_canaux(wx, args, device, compute_type):
                                         (args.correspondant, noms[1] if len(noms) > 1 else "Correspondant"))):
         etape("transcription", 10 + idx * 40, f"piste {idx + 1}/2 : {nom}")
         res, _ = transcrire_fichier(wx, audio, args.modele, device, compute_type, args.langue)
-        for s in res["segments"]:
-            s["_loc"] = nom
-            tous.append(s)
+        for seg in res["segments"]:
+            seg["speaker"] = nom
+            for m in (seg.get("words") or []):
+                m["speaker"] = nom
+            tous.append(seg)
 
     etape("fusion", 90, "entrelacement chronologique des deux pistes")
     tous.sort(key=lambda s: s.get("start", 0.0))
-    tours = regrouper(tous, lambda s: s["_loc"], [])
+    tours = regrouper(tous)
     return tours
 
 
@@ -169,7 +210,7 @@ def mode_un_canal(wx, args, device, compute_type):
 
     etape("fusion", 92, "attribution des tours de parole")
     noms = [n.strip() for n in args.noms.split(",") if n.strip()]
-    return regrouper(res["segments"], lambda s: s.get("speaker"), noms)
+    return regrouper(res["segments"], noms)
 
 
 MODELES_DIARISATION = [

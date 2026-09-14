@@ -22,6 +22,32 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+SR = 16000
+
+
+def charger_audio(chemin):
+    """Decode en mono 16 kHz float32, via PyAV.
+
+    On n'utilise PAS whisperx.load_audio() : il lance ffmpeg en
+    sous-processus, or ffmpeg n'est pas installe (et PyAV embarque deja
+    les bibliotheques necessaires).
+    """
+    import av
+    import numpy as np
+    morceaux = []
+    with av.open(chemin) as cont:
+        flux = cont.streams.audio[0]
+        res = av.AudioResampler(format="s16", layout="mono", rate=SR)
+        for trame in cont.decode(flux):
+            for t in res.resample(trame):
+                morceaux.append(t.to_ndarray().reshape(-1))
+        for t in res.resample(None):
+            morceaux.append(t.to_ndarray().reshape(-1))
+    if not morceaux:
+        raise RuntimeError("Aucune donnee audio decodee : " + chemin)
+    return (np.concatenate(morceaux).astype("float32") / 32768.0)
+
+
 def emettre(**kw):
     print(json.dumps(kw, ensure_ascii=False), flush=True)
 
@@ -33,7 +59,7 @@ def etape(nom, pct, msg=""):
 # --------------------------------------------------------------------------- #
 def transcrire_fichier(wx, audio, modele, device, compute_type, langue, aligner=True):
     """Transcrit puis (optionnellement) aligne au mot pres. Retourne les segments."""
-    son = wx.load_audio(audio)
+    son = charger_audio(audio)
     modele_asr = wx.load_model(modele, device, compute_type=compute_type, language=langue)
     res = modele_asr.transcribe(son, batch_size=8)
     del modele_asr
@@ -127,6 +153,7 @@ def mode_un_canal(wx, args, device, compute_type):
         return [(seul, " ".join(_texte_de(s) for s in res["segments"] if _texte_de(s)))]
 
     etape("diarisation", 75, "identification des locuteurs")
+    # On passe le signal deja decode, sinon whisperx rappellerait ffmpeg.
     import config
     token = config.hf_token()
     if not token:
@@ -137,7 +164,7 @@ def mode_un_canal(wx, args, device, compute_type):
 
     pipeline = _pipeline_diarisation(wx, token, device)
     kw = {} if args.speakers in (0, None) else {"num_speakers": args.speakers}
-    tours_diar = pipeline(args.audio, **kw)
+    tours_diar = pipeline(son, **kw)
     res = wx.assign_word_speakers(tours_diar, res)
 
     etape("fusion", 92, "attribution des tours de parole")
@@ -145,25 +172,39 @@ def mode_un_canal(wx, args, device, compute_type):
     return regrouper(res["segments"], lambda s: s.get("speaker"), noms)
 
 
+MODELES_DIARISATION = [
+    "pyannote/speaker-diarization-community-1",   # defaut de WhisperX 3.8
+    "pyannote/speaker-diarization-3.1",           # repli, licence plus repandue
+]
+
+
 def _pipeline_diarisation(wx, token, device):
-    """L'emplacement de la classe a change selon les versions de WhisperX."""
+    """Construit le pipeline de diarisation.
+
+    Les modeles pyannote sont sous licence : il faut accepter leurs
+    conditions sur huggingface.co, modele par modele. WhisperX utilise
+    par defaut community-1 ; on retombe sur 3.1 s'il n'est pas autorise,
+    ce qui evite d'imposer une demarche supplementaire.
+    """
+    from whisperx.diarize import DiarizationPipeline
     erreurs = []
-    for fabrique in (
-        lambda: __import__("whisperx.diarize", fromlist=["DiarizationPipeline"]).DiarizationPipeline,
-        lambda: getattr(wx, "DiarizationPipeline"),
-    ):
-        try:
-            cls = fabrique()
-        except Exception as e:
-            erreurs.append(str(e))
-            continue
-        for kwargs in ({"use_auth_token": token, "device": device},
-                       {"token": token, "device": device}):
+    for nom in MODELES_DIARISATION:
+        for kwargs in ({"model_name": nom, "token": token, "device": device},
+                       {"model_name": nom, "use_auth_token": token, "device": device}):
             try:
-                return cls(**kwargs)
-            except Exception as e:
-                erreurs.append(str(e))
-    raise RuntimeError("Pipeline de diarisation introuvable : " + " | ".join(erreurs[-2:]))
+                pipeline = DiarizationPipeline(**kwargs)
+                etape("diarisation", 78, "modele " + nom)
+                return pipeline
+            except TypeError as e:          # mauvaise convention de nommage
+                erreurs.append(nom + " : " + str(e)[:90])
+                continue
+            except Exception as e:          # licence refusee, reseau...
+                erreurs.append(nom + " : " + str(e)[:110])
+                break
+    raise RuntimeError(
+        "Aucun modele de diarisation accessible. Connectez-vous a huggingface.co "
+        "et acceptez les conditions d'au moins un de ces modeles : "
+        + ", ".join(MODELES_DIARISATION) + ". Details : " + " | ".join(erreurs[-2:]))
 
 
 # --------------------------------------------------------------------------- #

@@ -11,6 +11,15 @@ import json
 import wave
 import datetime as _dt
 
+INTERDITS = '<>:"/|?*' + chr(92)   # chr(92) = antislash
+
+
+def nettoyer_nom(nom):
+    """Retire les caracteres interdits par Windows dans un nom de fichier."""
+    nom = "".join(("-" if c in INTERDITS else c) for c in (nom or ""))
+    return nom.strip().strip(".").strip()[:120]
+
+
 ETATS = ("nouveau", "en_attente", "en_cours", "termine", "erreur")
 EXTS_AUDIO = {".wav", ".m4a", ".mp3", ".ogg", ".flac", ".aac", ".opus", ".mp4", ".webm"}
 
@@ -87,11 +96,56 @@ class Bibliotheque:
             e["erreur"] = None
         self.enregistrer()
 
-    def renommer(self, ident, titre):
-        e = self.entrees.get(ident)
-        if e:
-            e["titre"] = titre.strip() or e["id"]
-            self.enregistrer()
+    def renommer(self, ident, nouveau_nom):
+        """Renomme reellement les fichiers sur le disque.
+
+        Le nom affiche dans l'application EST le nom du fichier : sinon,
+        impossible de retrouver l'enregistrement en ouvrant le dossier.
+        Renomme l'audio et tout ce qui en derive (.txt, .dialogue.txt,
+        .segments.json, .speakers.json). Leve ValueError en cas de probleme.
+        Retourne le nouvel identifiant.
+        """
+        if ident not in self.entrees:
+            raise ValueError("Enregistrement introuvable.")
+        nouveau_nom = nettoyer_nom(nouveau_nom)
+        if not nouveau_nom:
+            raise ValueError("Le nom ne peut pas etre vide.")
+        if nouveau_nom == ident:
+            return ident
+        if nouveau_nom in self.entrees:
+            raise ValueError(f"Un enregistrement nomme « {nouveau_nom} » existe deja.")
+
+        # Tous les fichiers derives partagent la meme racine
+        concernes = [n for n in os.listdir(self.dossier)
+                     if n == ident or n.startswith(ident + ".")]
+        if not concernes:
+            raise ValueError("Aucun fichier correspondant sur le disque.")
+
+        couples = []
+        for n in concernes:
+            cible = nouveau_nom + n[len(ident):]
+            if os.path.exists(os.path.join(self.dossier, cible)):
+                raise ValueError(f"Le fichier « {cible} » existe deja.")
+            couples.append((n, cible))
+
+        faits = []
+        try:
+            for src, dst in couples:
+                os.replace(os.path.join(self.dossier, src),
+                           os.path.join(self.dossier, dst))
+                faits.append((src, dst))
+        except OSError as e:
+            for src, dst in reversed(faits):          # retour arriere
+                try:
+                    os.replace(os.path.join(self.dossier, dst),
+                               os.path.join(self.dossier, src))
+                except OSError:
+                    pass
+            raise ValueError(f"Renommage impossible : {e}. "
+                             "Le fichier est peut-etre ouvert dans un autre programme.")
+
+        self.synchroniser()
+        return nouveau_nom
 
     def supprimer(self, ident, effacer_fichiers=False):
         e = self.entrees.pop(ident, None)
@@ -133,7 +187,7 @@ class Bibliotheque:
             e = dict(ancienne)
             e["id"] = ident
             e["fichiers"] = trouve["fichiers"]
-            e.setdefault("titre", ident)
+            e["titre"] = ident
             e.setdefault("etat", "nouveau")
             e.setdefault("progression", 0)
             e.setdefault("erreur", None)

@@ -267,9 +267,14 @@ class Fenetre(QMainWindow):
         entrees = self.biblio.liste()
         self.table.setRowCount(len(entrees))
         for r, e in enumerate(entrees):
-            titre = e.get("titre") or e["id"]
+            # On affiche le NOM DE FICHIER reel : c'est ce qu'on retrouve
+            # en ouvrant le dossier.
+            fichiers = e.get("fichiers", {})
+            principal = fichiers.get("mono") or fichiers.get("micro")
             if e.get("deux_canaux"):
-                titre += "  ⟨2 pistes⟩"
+                titre = e["id"] + "  ⟨2 pistes⟩"
+            else:
+                titre = os.path.basename(principal) if principal else e["id"]
             items = [
                 QTableWidgetItem(titre),
                 QTableWidgetItem(formater_date(e.get("date"))),
@@ -312,16 +317,35 @@ class Fenetre(QMainWindow):
             self.vue.setPlainText("")
             self.vue.setPlaceholderText("Pas encore transcrit. Cliquez sur « Transcrire ».")
 
+    def _selectionner(self, ident):
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 0)
+            if it and it.data(Qt.UserRole) == ident:
+                self.table.selectRow(r)
+                return
+
     def _renommer(self):
         ident = self._ident_selectionne()
         if not ident:
             return
-        e = self.biblio.get(ident)
-        titre, ok = QInputDialog.getText(self, "Renommer", "Titre :",
-                                         text=e.get("titre") or ident)
-        if ok:
-            self.biblio.renommer(ident, titre)
-            self.rafraichir()
+        if ident == self.ident_en_cours or ident in self.file_attente:
+            QMessageBox.information(
+                self, "Renommer",
+                "Transcription en cours sur cet enregistrement : attendez la fin.")
+            return
+        nom, ok = QInputDialog.getText(
+            self, "Renommer",
+            "Nom du fichier (sans extension). Les fichiers seront renommes sur le disque :", text=ident)
+        if not ok:
+            return
+        try:
+            nouveau = self.biblio.renommer(ident, nom)
+        except ValueError as ex:
+            QMessageBox.warning(self, "Renommage impossible", str(ex))
+            return
+        self.rafraichir()
+        self._selectionner(nouveau)
+        self.statut.showMessage(f"Fichiers renommes en « {nouveau} »", 6000)
 
     # ---------------------------------------------------------- transcription --
     def _transcrire_selection(self):

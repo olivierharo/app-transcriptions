@@ -1,0 +1,22 @@
+# Application complete : enregistrement + WhisperX (transcription, alignement
+# au mot pres, diarisation) + interface native.
+#
+# Environnement dedie sur Python 3.12 : WhisperX ne supporte pas encore 3.14.
+# Sur 3.14, pip se rabat sur une version tres ancienne qui epingle
+# ctranslate2==4.4.0 et l'installation echoue.
+#
+#   py -3.12 -m venv .venv-whisperx
+#   .venv-whisperx\Scripts\python.exe -m pip install torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 ^
+#       --index-url https://download.pytorch.org/whl/cu128
+#   .venv-whisperx\Scripts\python.exe -m pip install -r requirements-app.txt
+#
+# Installer torch AVANT ce fichier : sinon la version CPU est tiree depuis PyPI
+# et l'acceleration GPU est perdue.
+
+whisperx>=3.8
+
+# Interface et capture audio
+PySide6>=6.7
+sounddevice>=0.5
+numpy
+av

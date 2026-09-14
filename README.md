@@ -1,103 +1,112 @@
 # app-transcriptions
 
-Transcription automatique de conversations (français) en local, accélérée par GPU,
-avec identification optionnelle des locuteurs.
+Application locale d'enregistrement et de transcription de conversations (français),
+accélérée par GPU, avec identification des locuteurs.
 
-Déposez un fichier audio dans un dossier surveillé : un fichier `.txt` apparaît à côté.
+Tout est calculé sur la machine : aucun audio n'est envoyé sur Internet.
 
-## Fonctionnement
+## L'application
 
-| Étape | Outil | Sortie |
+Une fenêtre native qui couvre tout le cycle :
+
+- **enregistrer** directement, au format idéal pour Whisper (WAV 16 kHz mono) ;
+- **lister** les enregistrements avec leur durée et leur état ;
+- **transcrire** d'un clic, en tâche de fond, avec progression en direct ;
+- **lire** la transcription attribuée (`Olivier : … / Christian : …`).
+
+```bat
+Application Transcriptions.bat
+```
+
+### Deux modes de capture
+
+| Situation | Mode | Identification des locuteurs |
 |---|---|---|
-| Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`large-v3`) | `X.txt`, `X.segments.json` |
-| Diarisation *(optionnelle)* | [pyannote.audio](https://github.com/pyannote/pyannote-audio) | `X.speakers.json` |
-| Fusion | — | `X.dialogue.txt` (`Olivier : …` / `Christian : …`) |
+| Téléphone en haut-parleur, rendez-vous physique | **Micro seul** | diarisation pyannote (via WhisperX) |
+| Appel Teams / Zoom / navigateur | **Micro + son du PC** | **exacte** : une piste par personne, sans IA |
 
-Aucun audio ne quitte la machine : tout est calculé en local.
-
-## Prérequis
-
-- Windows, Python 3.14 (fonctionne aussi en 3.11/3.12)
-- GPU NVIDIA recommandé (testé sur RTX 3070 8 Go)
-- Aucun `ffmpeg` à installer : le décodage passe par `av`
+Le second mode enregistre deux fichiers séparés (`…moi.wav`, `…correspondant.wav`)
+grâce à la boucle WASAPI. Chaque piste ne contenant qu'une voix, l'attribution
+est certaine — pas d'erreur possible sur les chevauchements.
 
 ## Installation
 
-### 1. Transcription
+### Application complète (recommandé)
+
+WhisperX ne supporte pas encore Python 3.14 : l'application tourne donc sur **3.12**.
+
+```bat
+py -3.12 -m venv .venv-whisperx
+.venv-whisperx\Scripts\python.exe -m pip install torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+.venv-whisperx\Scripts\python.exe -m pip install -r requirements-app.txt
+```
+
+> Installez `torch` **avant** `requirements-app.txt`, sinon pyannote tire la
+> version CPU de PyTorch depuis PyPI et l'accélération GPU est perdue.
+
+### Transcription simple, sans interface (optionnel)
+
+Chaîne légère fondée sur faster-whisper, compatible Python 3.14, sans PyTorch :
 
 ```bat
 py -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 2. Diarisation (optionnelle)
-
-Environnement **séparé** : PyTorch embarque ses propres bibliothèques CUDA, qui
-entrent en conflit avec celles de CTranslate2.
-
-```bat
-py -m venv .venv-diar
-.venv-diar\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-.venv-diar\Scripts\python.exe -m pip install -r requirements-diarisation.txt
-```
-
-> Installez `torch` **avant** `requirements-diarisation.txt`, sinon pyannote tire
-> la version CPU de PyTorch depuis PyPI et l'accélération GPU est perdue.
-
-### 3. Configuration
+### Configuration
 
 ```bat
 copy .env.example .env
 ```
 
-Renseignez `.env` (jamais versionné). Pour la diarisation, il faut un compte
-Hugging Face, accepter les conditions de
-[`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0) et
-[`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1),
-puis créer un token de type *Read*.
+Pour la diarisation (mode micro seul), il faut un compte Hugging Face, accepter
+les conditions de [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0)
+et [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1),
+puis créer un token *Read* et le renseigner dans `.env`. Le mode deux pistes
+n'en a pas besoin.
 
-## Utilisation
-
-### Transcription d'un fichier
+## Outils en ligne de commande
 
 ```bat
+:: transcription d'un fichier (chaîne légère)
 .venv\Scripts\python.exe src\transcrire.py "mon_audio.m4a"
-```
 
-Options : `--model medium` (plus léger), `--device cpu`, `--lang en`.
-Le GPU et le modèle `large-v3` sont choisis automatiquement s'ils sont disponibles.
-
-### Surveillance d'un dossier
-
-Double-cliquez sur **`Surveiller les enregistrements.bat`**, ou :
-
-```bat
+:: surveillance d'un dossier : rattrape le retard puis traite les nouveaux fichiers
 .venv\Scripts\python.exe src\surveiller.py
+
+:: transcription + locuteurs (moteur de l'application)
+cd src && ..\.venv-whisperx\Scripts\python.exe -m app.moteur "audio.wav" --noms "Olivier,Christian"
 ```
 
-Au lancement, tout audio sans `.txt` est transcrit (rattrapage du retard) ; ensuite
-les nouveaux fichiers déposés sont traités au fil de l'eau.
+## Structure
 
-### Identification des locuteurs
-
-```bat
-.venv-diar\Scripts\python.exe src\diariser.py "mon_audio.m4a" --noms "Olivier,Christian"
+```
+src/
+├── config.py           lecture du .env, chemins (aucun secret dans le code)
+├── transcrire.py       transcription simple (faster-whisper)
+├── surveiller.py       surveillance d'un dossier
+└── app/
+    ├── __main__.py     point d'entrée de l'application
+    ├── fenetre.py      interface PySide6
+    ├── enregistreur.py capture audio 16 kHz mono, mono ou deux pistes
+    ├── bibliotheque.py index des enregistrements et de leur état
+    └── moteur.py       WhisperX en sous-processus, progression en JSON
 ```
 
-Les noms sont attribués dans l'ordre d'apparition. Sans `--noms`, les étiquettes
-brutes (`SPEAKER_00`…) sont conservées. `--speakers 0` laisse le modèle deviner
-le nombre de locuteurs.
+Le moteur tourne dans un **processus séparé** : l'interface ne gèle jamais et un
+plantage GPU ne fait pas tomber l'application.
 
 ## Performances constatées
 
-Conversation téléphonique de 29 min, RTX 3070 laptop :
+Conversation de 29 min, RTX 3070 laptop (8 Go) :
 
 | Configuration | Durée | Vitesse |
 |---|---|---|
 | `medium`, CPU (int8) | 21 min | 1,4× temps réel |
 | `large-v3`, GPU (float16) | 3 min | 9,5× temps réel |
 
-`large-v3` corrige aussi de vraies erreurs de sens (vocabulaire métier, noms propres).
+`large-v3` corrige aussi de vraies erreurs de sens : « plateau repas » au lieu de
+« plat de repas », « on écaille » au lieu d'une bouillie phonétique.
 
 ## Pièges rencontrés
 
@@ -106,14 +115,18 @@ Conversation téléphonique de 29 min, RTX 3070 laptop :
   dépend de `cudart`), et CTranslate2 charge ses DLL via `LoadLibrary` à
   l'exécution — ce qui **ignore `os.add_dll_directory`**. `src/transcrire.py`
   préfixe donc aussi le `PATH` avec les dossiers `nvidia/*/bin`.
-- **WhisperX** n'est pas utilisable ici : il épingle `ctranslate2==4.4.0`, sans
-  distribution pour Python 3.14. D'où le choix d'ajouter pyannote séparément
-  plutôt que de migrer vers WhisperX.
+- **WhisperX « impossible à installer »** : faux diagnostic. L'erreur
+  `No matching distribution found for ctranslate2==4.4.0` ne vient pas de
+  WhisperX lui-même, mais de pip qui se rabat sur une version très ancienne
+  faute de support de Python 3.14. Sur Python 3.12, WhisperX 3.8+ s'installe
+  normalement et utilise `ctranslate2` 4.8.
 - Un fichier encore en cours d'écriture est attendu (taille stable) avant
   traitement, pour ne pas transcrire un enregistrement incomplet.
+- Si le périphérique refuse 16 kHz, on enregistre à sa fréquence native puis on
+  rééchantillonne avec PyAV plutôt que de laisser le pilote bricoler la conversion.
 
 ## Confidentialité
 
 Les enregistrements et leurs transcriptions sont des **données personnelles**.
-Le `.gitignore` exclut les fichiers audio, les transcriptions, les journaux,
-le dossier `local/` et le fichier `.env`. Vérifiez `git status` avant tout commit.
+Le `.gitignore` exclut les fichiers audio, les transcriptions, les journaux, le
+dossier `local/` et le fichier `.env`. Vérifiez `git status` avant tout commit.

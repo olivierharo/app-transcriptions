@@ -1,0 +1,11 @@
+# Transcription (environnement principal : .venv)
+#   py -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+faster-whisper>=1.2.1
+
+# Bibliotheques CUDA necessaires a CTranslate2 pour l'acceleration GPU.
+# cuda-runtime est indispensable : sans lui, cublas64_12.dll ne peut pas se charger.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cuda-runtime-cu12

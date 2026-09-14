@@ -1,0 +1,57 @@
+# =====================================================================
+#  DONNEES PERSONNELLES / CLIENT — ne doivent JAMAIS etre publiees
+# =====================================================================
+local/
+data/
+enregistrements/
+
+# Fichiers audio, quel que soit l'emplacement
+*.m4a
+*.mp3
+*.wav
+*.ogg
+*.flac
+*.wma
+*.aac
+*.opus
+*.webm
+*.mp4
+
+# Sorties de transcription / diarisation
+*.segments.json
+*.speakers.json
+*.dialogue.txt
+transcription*.txt
+Enregistrement*.txt
+
+# =====================================================================
+#  SECRETS
+# =====================================================================
+.env
+.env.*
+!.env.example
+*.token
+*_token.txt
+
+# =====================================================================
+#  ENVIRONNEMENTS PYTHON
+# =====================================================================
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# =====================================================================
+#  LOGS & DIVERS
+# =====================================================================
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

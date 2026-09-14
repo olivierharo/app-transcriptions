@@ -1,0 +1,16 @@
+# Diarisation "qui parle quand" (environnement dedie : .venv-diar)
+#
+# Environnement SEPARE a dessein : PyTorch embarque ses propres bibliotheques
+# CUDA, qui entreraient en conflit avec celles utilisees par CTranslate2.
+#
+#   py -m venv .venv-diar
+#   .venv-diar\Scripts\python.exe -m pip install torch torchaudio ^
+#       --index-url https://download.pytorch.org/whl/cu128
+#   .venv-diar\Scripts\python.exe -m pip install -r requirements-diarisation.txt
+#
+# Important : installer torch AVANT ce fichier, sinon pyannote tire la version
+# CPU de PyTorch depuis PyPI et l'acceleration GPU est perdue.
+
+pyannote.audio>=4.0
+av
+numpy

@@ -9,17 +9,67 @@ Deux modes :
 
 Si le peripherique refuse 16 kHz, on enregistre a sa frequence native puis on
 reechantillonne proprement avec PyAV a la fin.
+
+Windows : sounddevice (micro) et PyAudioWPatch (loopback WASAPI).
+Linux   : PulseAudio / PipeWire via les outils pactl et parec. Le son du PC
+          se capte sur la source "monitor" de la sortie, qui existe nativement.
 """
 import os
+import sys
 import wave
 import time
+import shutil
 import threading
+import subprocess
 import datetime as _dt
 
 import numpy as np
-import sounddevice as sd
+
+LINUX = sys.platform.startswith("linux")
+if not LINUX:
+    import sounddevice as sd
 
 SR_CIBLE = 16000
+
+
+# --------------------------------------------------------------------------- #
+# Peripheriques - Linux (PulseAudio / PipeWire)
+# --------------------------------------------------------------------------- #
+def _pactl(*args):
+    try:
+        return subprocess.run(["pactl", *args], capture_output=True, text=True,
+                              timeout=5, env={**os.environ, "LC_ALL": "C"}).stdout
+    except Exception:
+        return ""
+
+
+def _sources_pulse():
+    """[(nom_technique, description)] de toutes les sources, monitors compris."""
+    res, nom = [], None
+    for ligne in _pactl("list", "sources").splitlines():
+        ligne = ligne.strip()
+        if ligne.startswith("Name:"):
+            nom = ligne.split(":", 1)[1].strip()
+        elif ligne.startswith("Description:") and nom:
+            res.append((nom, ligne.split(":", 1)[1].strip()))
+            nom = None
+    return res
+
+
+def _pulse_entree():
+    return [{"id": n, "nom": d} for n, d in _sources_pulse() if not n.endswith(".monitor")]
+
+
+def _pulse_sortie():
+    return [{"id": n, "nom": d.replace("Monitor of ", "Son de : ")}
+            for n, d in _sources_pulse() if n.endswith(".monitor")]
+
+
+def _pulse_defaut(liste, commande, suffixe=""):
+    defaut = _pactl(commande).strip() + suffixe
+    if any(x["id"] == defaut for x in liste):
+        return defaut
+    return liste[0]["id"] if liste else None
 
 
 # --------------------------------------------------------------------------- #
@@ -39,6 +89,8 @@ def _lister(sortie=False):
 
 def peripheriques_entree():
     """Micros. On privilegie WASAPI (liste propre, faible latence) ; sinon tout."""
+    if LINUX:
+        return _pulse_entree()
     tous = _lister(sortie=False)
     return [d for d in tous if d["api"] == "Windows WASAPI"] or tous
 
@@ -49,6 +101,8 @@ def peripheriques_sortie():
     sounddevice ne sait pas faire de loopback : sa classe WasapiSettings
     n'expose que exclusive / auto_convert / explicit_sample_format.
     """
+    if LINUX:
+        return _pulse_sortie()
     res = []
     try:
         import pyaudiowpatch as pa
@@ -69,6 +123,8 @@ def peripherique_defaut_entree():
     liste = peripheriques_entree()
     if not liste:
         return None
+    if LINUX:
+        return _pulse_defaut(liste, "get-default-source")
     try:
         d = sd.default.device[0]
         if any(x["id"] == d for x in liste):
@@ -82,6 +138,8 @@ def peripherique_defaut_sortie():
     liste = peripheriques_sortie()
     if not liste:
         return None
+    if LINUX:
+        return _pulse_defaut(liste, "get-default-sink", ".monitor")
     try:
         import pyaudiowpatch as pa
         p = pa.PyAudio()
@@ -283,6 +341,91 @@ class _PisteLoopback:
         return self.chemin
 
 
+class _PistePulse:
+    """Capture Linux d'une source PulseAudio / PipeWire (micro ou monitor).
+
+    parec convertit lui-meme en 16 kHz mono : pas de reechantillonnage.
+    Comme pour le loopback Windows, on comble d'apres l'horloge au cas ou
+    le serveur de son suspend le flux pendant un silence.
+    """
+
+    def __init__(self, chemin, source):
+        self.chemin = chemin
+        self.source = source
+        self.proc = None
+        self.wav = None
+        self.niveau = 0.0
+        self.t0 = None
+        self.ecrits = 0
+        self.fil = None
+        self._lock = threading.Lock()
+
+    def demarrer(self):
+        if not shutil.which("parec"):
+            raise RuntimeError("Outil 'parec' introuvable : installez le paquet pulseaudio-utils.")
+        self.proc = subprocess.Popen(
+            ["parec", "--device=" + self.source, "--rate=%d" % SR_CIBLE,
+             "--channels=1", "--format=s16le", "--latency-msec=100"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # L'audio arrive des le lancement (et attend dans le tube) : c'est
+        # l'origine de l'horloge. Courte attente pour detecter un echec
+        # immediat (source inconnue), sans trop decaler la 2e piste.
+        t0 = time.time()
+        time.sleep(0.15)
+        if self.proc.poll() is not None:
+            erreur = self.proc.stderr.read().decode("utf-8", "replace").strip()
+            self.proc = None
+            raise RuntimeError(f"Impossible d'ouvrir {self.source} : {erreur}")
+        self.wav = wave.open(self.chemin, "wb")
+        self.wav.setnchannels(1)
+        self.wav.setsampwidth(2)
+        self.wav.setframerate(SR_CIBLE)
+        self.t0 = t0
+        self.fil = threading.Thread(target=self._lire, daemon=True)
+        self.fil.start()
+
+    def _combler(self, jusqu_a):
+        manque = jusqu_a - self.ecrits
+        if manque > SR_CIBLE // 5:          # tolerance 200 ms : latence normale
+            self.wav.writeframes(b"\x00" * (manque * 2))
+            self.ecrits += manque
+
+    def _lire(self):
+        flux = self.proc.stdout
+        while True:
+            bloc = flux.read(1600 * 2)      # 100 ms
+            if not bloc:
+                break
+            bloc = bloc[: len(bloc) // 2 * 2]
+            with self._lock:
+                if self.wav is None:
+                    break
+                n = len(bloc) // 2
+                self._combler(int((time.time() - self.t0) * SR_CIBLE) - n)
+                self.wav.writeframes(bloc)
+                self.ecrits += n
+                ech = np.frombuffer(bloc, dtype=np.int16)
+                if ech.size:
+                    self.niveau = float(np.abs(ech).mean()) / 32768.0
+
+    def arreter(self):
+        if self.proc is not None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        if self.fil is not None:
+            self.fil.join(timeout=3)
+        with self._lock:
+            if self.wav is not None:
+                self._combler(int((time.time() - self.t0) * SR_CIBLE))
+                self.wav.close()
+                self.wav = None
+        self.proc = None
+        return self.chemin
+
+
 # --------------------------------------------------------------------------- #
 # Enregistreur
 # --------------------------------------------------------------------------- #
@@ -317,10 +460,12 @@ class Enregistreur:
         base = f"{horo}_{_nettoyer(titre)}" if titre else horo
         self.nom_base = base
 
-        pistes = [_Piste(os.path.join(self.dossier, f"{base}.wav"), micro_id)]
+        Micro = _PistePulse if LINUX else _Piste
+        Systeme = _PistePulse if LINUX else _PisteLoopback
+        pistes = [Micro(os.path.join(self.dossier, f"{base}.wav"), micro_id)]
         if systeme_id is not None:
             pistes[0].chemin = os.path.join(self.dossier, f"{base}.moi.wav")
-            pistes.append(_PisteLoopback(
+            pistes.append(Systeme(
                 os.path.join(self.dossier, f"{base}.correspondant.wav"), systeme_id))
 
         demarrees = []

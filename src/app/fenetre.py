@@ -3,13 +3,13 @@ import os
 import sys
 import json
 
-from PySide6.QtCore import Qt, QTimer, QProcess, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QColor
+from PySide6.QtCore import Qt, QTimer, QProcess, QProcessEnvironment, QUrl
+from PySide6.QtGui import QDesktopServices, QFont, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QTextEdit, QProgressBar, QGroupBox, QSplitter, QHeaderView, QMessageBox,
-    QAbstractItemView, QInputDialog, QFileDialog,
+    QAbstractItemView, QInputDialog, QFileDialog, QStackedWidget,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,7 +35,7 @@ def _racine():
     """Racine du projet : dossier de l'.exe si gele, sinon parent de src/."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _python_moteur():
@@ -46,11 +46,40 @@ def _python_moteur():
     Python qui contient WhisperX.
     """
     if not getattr(sys, "frozen", False):
+        # Lancee par un raccourci via pythonw.exe (sans console) : le moteur,
+        # lui, a besoin de python.exe pour ecrire sa progression.
+        dossier, nom = os.path.split(sys.executable)
+        if nom.lower() == "pythonw.exe":
+            return os.path.join(dossier, "python.exe")
         return sys.executable
-    candidat = os.path.join(_racine(), ".venv-whisperx", "Scripts", "python.exe")
+    if sys.platform == "win32":
+        candidat = os.path.join(_racine(), ".venv-whisperx", "Scripts", "python.exe")
+    else:
+        candidat = os.path.join(_racine(), ".venv-whisperx", "bin", "python")
     if os.path.exists(candidat):
         return candidat
     return os.environ.get("PYTHON_MOTEUR") or "python"
+
+
+def _environnement_moteur():
+    """Environnement du sous-processus moteur.
+
+    Sous Linux, CTranslate2 (Whisper) cherche cuBLAS/cuDNN via le chargeur
+    systeme : les bibliotheques installees par pip dans nvidia/*/lib doivent
+    figurer dans LD_LIBRARY_PATH, sinon la transcription echoue sur GPU.
+    """
+    env = QProcessEnvironment.systemEnvironment()
+    if sys.platform.startswith("linux"):
+        import glob
+        python = _python_moteur()
+        venv = os.path.dirname(os.path.dirname(python))
+        libs = glob.glob(os.path.join(venv, "lib", "python3*", "site-packages",
+                                      "nvidia", "*", "lib"))
+        if libs:
+            existant = env.value("LD_LIBRARY_PATH", "")
+            env.insert("LD_LIBRARY_PATH", os.pathsep.join(libs + ([existant] if existant else [])))
+    env.insert("PYTHONIOENCODING", "utf-8")
+    return env
 
 
 class Fenetre(QMainWindow):
@@ -77,8 +106,18 @@ class Fenetre(QMainWindow):
 
     # ------------------------------------------------------------------ UI --
     def _construire(self):
+        # Trois ecrans : verification du GPU au lancement, application
+        # normale, ou message bloquant si la transcription est impossible.
+        self.pages = QStackedWidget()
+        self.setCentralWidget(self.pages)
+        self.page_attente = self._page_message(
+            "", "Vérification de la carte graphique…",
+            "Quelques secondes, le temps de charger le moteur de transcription.")
+        self.pages.addWidget(self.page_attente)
+
         central = QWidget()
-        self.setCentralWidget(central)
+        self.page_principale = central
+        self.pages.addWidget(central)
         principal = QVBoxLayout(central)
         principal.setContentsMargins(12, 12, 12, 12)
         principal.setSpacing(10)
@@ -94,6 +133,96 @@ class Fenetre(QMainWindow):
 
         self.statut = self.statusBar()
         self.statut.showMessage(f"Dossier : {self.dossier}")
+        self.label_gpu = QLabel()
+        self.label_gpu.setContentsMargins(8, 0, 8, 0)
+        self.statut.addPermanentWidget(self.label_gpu)
+        self._detecter_gpu()
+
+    # ------------------------------------------------------------------ GPU --
+    def _page_message(self, emoji, titre, texte, detail=""):
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(60, 40, 60, 40)
+        v.addStretch(2)
+        # Couleurs lisibles en theme clair comme sombre : bleu moyen pour le
+        # titre, couleur du theme pour le reste.
+        for contenu, taille, gras, couleur in ((emoji, 64, False, None),
+                                               (titre, 26, True, "#3b82f6"),
+                                               (texte, 12, False, None),
+                                               (detail, 9, False, "#9ca3af")):
+            if not contenu:
+                continue
+            l = QLabel(contenu)
+            l.setAlignment(Qt.AlignCenter)
+            l.setWordWrap(True)
+            l.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            f = QFont(); f.setPointSize(taille); f.setBold(gras)
+            l.setFont(f)
+            if couleur:
+                l.setStyleSheet(f"color:{couleur};")
+            v.addWidget(l)
+            v.addSpacing(12)
+        v.addStretch(3)
+        return page
+
+    def _bloquer(self, page):
+        """Remplace toute l'application par un message."""
+        self.pages.addWidget(page)
+        self.pages.setCurrentWidget(page)
+        self.statut.hide()
+
+    def _afficher_gpu(self, texte, couleur, detail):
+        self.label_gpu.setText(f"<span style='color:{couleur}'>●</span> {texte}")
+        self.label_gpu.setToolTip(detail)
+
+    def _detecter_gpu(self):
+        """Interroge le moteur en tache de fond : charger PyTorch prend
+        quelques secondes, pendant lesquelles un ecran d'attente s'affiche."""
+        self.pages.setCurrentWidget(self.page_attente)
+        self.proc_gpu = QProcess(self)
+        self.proc_gpu.setWorkingDirectory(os.path.join(_racine(), "src"))
+        self.proc_gpu.setProcessEnvironment(_environnement_moteur())
+        self.proc_gpu.finished.connect(self._gpu_detecte)
+        self.proc_gpu.errorOccurred.connect(self._gpu_erreur)
+        self.proc_gpu.start(_python_moteur(), ["-m", "app.moteur", "--diagnostic"])
+
+    def _moteur_absent(self, detail):
+        self._bloquer(self._page_message(
+            "🔧", "Installation incomplète",
+            "Le moteur de transcription est introuvable ou ne démarre pas.\n"
+            "Relancez l'installateur de l'application.", detail))
+
+    def _gpu_erreur(self, _erreur):
+        if self.proc_gpu.error() == QProcess.FailedToStart:
+            self._moteur_absent("Environnement Python introuvable : " + _python_moteur())
+
+    def _gpu_detecte(self, code, _statut):
+        brut = bytes(self.proc_gpu.readAllStandardOutput()).decode("utf-8", "replace")
+        for ligne in brut.splitlines():
+            try:
+                diag = json.loads(ligne).get("diagnostic")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            if not diag:
+                continue
+            if diag.get("gpu"):
+                self._afficher_gpu("GPU : " + diag.get("nom", ""), "#15803d",
+                                   "Transcription accélérée par la carte graphique ("
+                                   + diag.get("detail", "") + ").")
+                self.pages.setCurrentWidget(self.page_principale)
+            else:
+                self._bloquer(self._page_message(
+                    "🤷 🍫", "Pas de bras, pas de chocolat !",
+                    "Pas de carte graphique NVIDIA, pas de transcription.\n\n"
+                    "Cette application fait tourner de gros modèles d'intelligence "
+                    "artificielle directement sur votre ordinateur, pour qu'aucune "
+                    "conversation ne quitte la machine. Sans carte graphique NVIDIA, "
+                    "transcrire une heure d'appel prendrait plusieurs heures : "
+                    "l'application n'est donc pas utilisable sur ce poste.",
+                    "Raison technique : " + diag.get("detail", "") + "."))
+            return
+        erreur = bytes(self.proc_gpu.readAllStandardError()).decode("utf-8", "replace")
+        self._moteur_absent(erreur[-400:] or f"code de sortie {code}")
 
     def _barre_dossier(self):
         w = QWidget()
@@ -161,7 +290,7 @@ class Fenetre(QMainWindow):
 
         g.addWidget(QLabel("Titre :"), 3, 0)
         self.champ_titre = QLineEdit()
-        self.champ_titre.setPlaceholderText("facultatif — ex. « Christian – refonte site »")
+        self.champ_titre.setPlaceholderText("facultatif — ex. « Réunion projet – devis »")
         g.addWidget(self.champ_titre, 3, 1)
 
         self.bouton_rec = QPushButton("● Démarrer l'enregistrement")
@@ -420,9 +549,7 @@ class Fenetre(QMainWindow):
         args = ["-m", "app.moteur", principal]
         if correspondant:
             args += ["--correspondant", correspondant]
-        noms = os.environ.get("NOMS_LOCUTEURS", "Olivier,Christian")
-        args += ["--noms", noms, "--sortie",
-                 os.path.join(self.dossier, e["id"] + ".dialogue.txt")]
+        args += ["--sortie", os.path.join(self.dossier, e["id"] + ".dialogue.txt")]
 
         self.ident_en_cours = ident
         self.biblio.definir_etat(ident, "en_cours", progression=0)
@@ -433,6 +560,7 @@ class Fenetre(QMainWindow):
         self.proc = QProcess(self)
         self.proc.setWorkingDirectory(os.path.join(_racine(), "src"))
         self.proc.setProcessChannelMode(QProcess.SeparateChannels)
+        self.proc.setProcessEnvironment(_environnement_moteur())
         self.proc.readyReadStandardOutput.connect(self._sortie_moteur)
         self.proc.finished.connect(self._moteur_termine)
         self.proc.start(_python_moteur(), args)
@@ -489,9 +617,37 @@ class Fenetre(QMainWindow):
         ev.accept()
 
 
+def _chemin_icone():
+    """icone.ico, a cote de ce module ou extrait par PyInstaller."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, "app", "icone.ico")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "icone.ico")
+
+
+def _identifiant_windows():
+    """Donne a l'application sa propre identite dans la barre des taches.
+
+    Sans cela, lancee via python.exe, Windows la range sous l'icone de
+    Python au lieu d'afficher la sienne.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "OlivierHaro.Transcriptions")
+    except Exception:
+        pass
+
+
 def lancer():
+    _identifiant_windows()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setApplicationName("Transcriptions")
+    app.setDesktopFileName("transcriptions")    # Linux : lie la fenetre au .desktop
+    app.setWindowIcon(QIcon(_chemin_icone()))
     f = Fenetre()
     f.show()
     sys.exit(app.exec())

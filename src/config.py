@@ -30,9 +30,12 @@ charger_env()
 
 
 def _fichier_parametres():
-    """Preferences utilisateur, dans %APPDATA% : elles survivent aux
-    reconstructions de l'executable et aux mises a jour du projet."""
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    """Preferences utilisateur, dans %APPDATA% (Windows) ou ~/.config
+    (Linux) : elles survivent aux reinstallations et mises a jour."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     dossier = os.path.join(base, "Transcriptions")
     os.makedirs(dossier, exist_ok=True)
     return os.path.join(dossier, "parametres.json")
@@ -56,8 +59,61 @@ def ecrire_parametre(cle, valeur):
     os.replace(tmp, chemin)
 
 
+def _dossier_documents():
+    """Dossier Documents REEL de l'utilisateur courant.
+
+    On interroge Windows plutot que de supposer ~/Documents : sur les postes
+    ou OneDrive (ou une strategie d'entreprise) redirige Documents, le
+    dossier ~/Documents est vide ou absent.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            from uuid import UUID
+
+            class GUID(ctypes.Structure):
+                _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                            ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+            u = UUID("FDD39AD0-238F-46AF-ADB4-6C85480369C7")   # FOLDERID_Documents
+            guid = GUID(u.fields[0], u.fields[1], u.fields[2],
+                        (ctypes.c_ubyte * 8).from_buffer_copy(u.bytes[8:]))
+            ptr = ctypes.c_wchar_p()
+            shell32 = ctypes.windll.shell32
+            if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None,
+                                            ctypes.byref(ptr)) == 0:
+                chemin = ptr.value
+                ctypes.windll.ole32.CoTaskMemFree(ptr)
+                if chemin:
+                    return chemin
+        except Exception:
+            pass
+    else:
+        # Linux : le nom du dossier depend de la langue ("Documents"...),
+        # xdg-user-dir donne le bon.
+        try:
+            import subprocess
+            chemin = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True,
+                                    text=True, timeout=5).stdout.strip()
+            if chemin and chemin != os.path.expanduser("~") and os.path.isdir(chemin):
+                return chemin
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), "Documents")
+
+
 def dossier_par_defaut():
-    return os.path.join(os.path.expanduser("~"), "Documents", "Enregistrements audio")
+    return os.path.join(_dossier_documents(), "Enregistrements audio")
+
+
+def _utilisable(chemin):
+    """Vrai si le dossier existe ou peut etre cree (lecteur present, droits)."""
+    try:
+        os.makedirs(chemin, exist_ok=True)
+        return os.path.isdir(chemin)
+    except OSError:
+        return False
 
 
 def dossier_enregistrements():
@@ -67,13 +123,18 @@ def dossier_enregistrements():
     (.env ou environnement), puis la valeur par defaut. Le choix de
     l'utilisateur passe en premier pour que le bouton de l'interface
     fonctionne toujours, meme si une variable d'environnement traine.
+
+    Un choix devenu inaccessible (lecteur reseau deconnecte, cle USB
+    retiree, parametres copies d'un autre poste) est ignore : on passe
+    au suivant plutot que d'empecher l'application de demarrer.
     """
-    choisi = lire_parametres().get("dossier_enregistrements")
-    if choisi:
-        return os.path.expandvars(os.path.expanduser(choisi))
-    d = os.environ.get("DOSSIER_ENREGISTREMENTS")
-    if d:
-        return os.path.expandvars(os.path.expanduser(d))
+    candidats = [lire_parametres().get("dossier_enregistrements"),
+                 os.environ.get("DOSSIER_ENREGISTREMENTS")]
+    for c in candidats:
+        if c:
+            c = os.path.expandvars(os.path.expanduser(c))
+            if _utilisable(c):
+                return c
     return dossier_par_defaut()
 
 

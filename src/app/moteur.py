@@ -8,11 +8,14 @@ Evenements emis :
     {"etape": "...", "progression": 0-100, "message": "..."}
     {"fini": true, "sortie": "chemin.dialogue.txt"}
     {"erreur": "message"}
+    {"diagnostic": {"gpu": true, "nom": "...", "detail": "..."}}   (--diagnostic)
+
+Le dialogue produit ne nomme pas les locuteurs : chaque changement de
+locuteur ouvre une nouvelle replique precedee d'un tiret.
 
 Usage :
     python -m app.moteur "audio.wav" [--correspondant "autre.wav"]
-                         [--noms "Olivier,Christian"] [--speakers 2]
-                         [--modele large-v3]
+                         [--speakers 2] [--modele large-v3]
 """
 import os
 import sys
@@ -93,9 +96,14 @@ def _texte_de(seg):
 
 
 def ecrire_dialogue(chemin, tours):
-    """tours : [(locuteur, texte)] deja regroupes."""
+    """tours : [texte] deja regroupes, un par changement de locuteur.
+
+    Pas de nom devant les repliques : un tiret signale seulement que
+    quelqu'un d'autre prend la parole. On evite ainsi d'afficher un nom
+    faux quand la diarisation confond les voix.
+    """
     with open(chemin, "w", encoding="utf-8") as f:
-        f.write("\n\n".join(f"{loc} : {txt}" for loc, txt in tours) + "\n")
+        f.write("\n\n".join("- " + txt for txt in tours) + "\n")
 
 
 PONCTUATION = (",", ".", "!", "?", ";", ":", "...", "%")
@@ -115,7 +123,7 @@ def _mots_localises(segments):
 
     On utilise l'attribution AU MOT produite par l'alignement WhisperX.
     Attribuer par segment reviendrait a voter a la majorite : une
-    replique courte ("oui", "j'en ai quelques-unes") tombant au milieu
+    replique courte ("oui", "d'accord, je regarde") tombant au milieu
     d'un long segment serait absorbee par le locuteur bavard.
     """
     for s in segments:
@@ -131,56 +139,65 @@ def _mots_localises(segments):
                 yield s.get("speaker"), texte
 
 
-def regrouper(segments, noms=()):
-    """Construit les tours de parole, en attribuant les noms fournis
-    aux locuteurs dans leur ordre d'apparition."""
-    paires = list(_mots_localises(segments))
+FIN_DE_PHRASE = (".", "!", "?", "…")
 
-    ordre = []
-    for loc, _ in paires:
-        if loc and loc not in ordre:       # les mots sans locuteur ne
-            ordre.append(loc)              # consomment pas un nom
-    noms = list(noms)
-    correspondance = {loc: (noms[i] if i < len(noms) else loc)
-                      for i, loc in enumerate(ordre)}
 
-    tours, courant, tampon, dernier = [], None, [], None
-    for loc, mot in paires:
+def _lisser(blocs):
+    """Supprime les faux changements de locuteur de la diarisation.
+
+    blocs : [[locuteur, [mots]]]. Un bloc d'UN seul mot, sans ponctuation
+    finale, coince entre deux blocs du meme locuteur, est presque toujours
+    un mot mal attribue au milieu d'une phrase : il ferait apparaitre un
+    tiret en plein milieu. On le rattache. Une vraie replique breve
+    ("Oui.", "D'accord ?") porte une ponctuation et est conservee.
+    """
+    i = 1
+    while i < len(blocs) - 1:
+        avant, bloc, apres = blocs[i - 1], blocs[i], blocs[i + 1]
+        if (len(bloc[1]) == 1 and avant[0] == apres[0]
+                and not bloc[1][0].endswith(FIN_DE_PHRASE)):
+            avant[1].extend(bloc[1] + apres[1])
+            del blocs[i:i + 2]
+        else:
+            i += 1
+    return blocs
+
+
+def regrouper(segments, lisser=False):
+    """Construit les tours de parole : un nouveau tour a chaque
+    changement de locuteur. Retourne la liste des textes."""
+    blocs, dernier = [], None
+    for loc, mot in _mots_localises(segments):
         if loc:
             dernier = loc
         else:
             loc = dernier                  # mot orphelin : on prolonge le tour
-        nom = correspondance.get(loc, "?")
-        if nom != courant:
-            if tampon:
-                tours.append((courant, _recoller(tampon)))
-            courant, tampon = nom, [mot]
+        if blocs and blocs[-1][0] == loc:
+            blocs[-1][1].append(mot)
         else:
-            tampon.append(mot)
-    if tampon:
-        tours.append((courant, _recoller(tampon)))
-    return [(n, t) for n, t in tours if t]
+            blocs.append([loc, [mot]])
+    if lisser:
+        blocs = _lisser(blocs)
+    return [t for t in (_recoller(mots) for _, mots in blocs) if t]
 
 
 # --------------------------------------------------------------------------- #
 def mode_deux_canaux(wx, args, device, compute_type):
     """Un fichier par personne : attribution exacte, aucune diarisation."""
-    noms = [n.strip() for n in args.noms.split(",") if n.strip()] or ["Moi", "Correspondant"]
     tous = []
-    for idx, (audio, nom) in enumerate(((args.audio, noms[0]),
-                                        (args.correspondant, noms[1] if len(noms) > 1 else "Correspondant"))):
-        etape("transcription", 10 + idx * 40, f"piste {idx + 1}/2 : {nom}")
+    for idx, audio in enumerate((args.audio, args.correspondant)):
+        etape("transcription", 10 + idx * 40, f"piste {idx + 1}/2")
         res, _ = transcrire_fichier(wx, audio, args.modele, device, compute_type, args.langue)
+        piste = f"piste{idx + 1}"
         for seg in res["segments"]:
-            seg["speaker"] = nom
+            seg["speaker"] = piste
             for m in (seg.get("words") or []):
-                m["speaker"] = nom
+                m["speaker"] = piste
             tous.append(seg)
 
     etape("fusion", 90, "entrelacement chronologique des deux pistes")
     tous.sort(key=lambda s: s.get("start", 0.0))
-    tours = regrouper(tous)
-    return tours
+    return regrouper(tous)
 
 
 def mode_un_canal(wx, args, device, compute_type):
@@ -189,9 +206,7 @@ def mode_un_canal(wx, args, device, compute_type):
     res, son = transcrire_fichier(wx, args.audio, args.modele, device, compute_type, args.langue)
 
     if args.speakers == 1:
-        noms = [n.strip() for n in args.noms.split(",") if n.strip()]
-        seul = noms[0] if noms else "Locuteur"
-        return [(seul, " ".join(_texte_de(s) for s in res["segments"] if _texte_de(s)))]
+        return [" ".join(_texte_de(s) for s in res["segments"] if _texte_de(s))]
 
     etape("diarisation", 75, "identification des locuteurs")
     # On passe le signal deja decode, sinon whisperx rappellerait ffmpeg.
@@ -208,9 +223,8 @@ def mode_un_canal(wx, args, device, compute_type):
     tours_diar = pipeline(son, **kw)
     res = wx.assign_word_speakers(tours_diar, res)
 
-    etape("fusion", 92, "attribution des tours de parole")
-    noms = [n.strip() for n in args.noms.split(",") if n.strip()]
-    return regrouper(res["segments"], noms)
+    etape("fusion", 92, "decoupage des tours de parole")
+    return regrouper(res["segments"], lisser=True)
 
 
 MODELES_DIARISATION = [
@@ -249,11 +263,53 @@ def _pipeline_diarisation(wx, token, device):
 
 
 # --------------------------------------------------------------------------- #
+def cuda_utilisable(torch):
+    """Vrai seulement si une carte repond REELLEMENT.
+
+    torch.cuda.is_available() peut repondre oui alors qu'aucune carte n'est
+    exploitable (carte masquee, pilote trop ancien) : la transcription
+    planterait ensuite. On alloue donc un tenseur minuscule pour verifier.
+    """
+    try:
+        if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+            return False
+        torch.zeros(1, device="cuda")
+        return True
+    except Exception:
+        return False
+
+
+def diagnostic():
+    """Indique si la transcription tournera sur GPU, sans charger WhisperX.
+
+    Emet {"diagnostic": {"gpu": bool, "nom": str, "detail": str}}.
+    On teste torch.cuda comme main() : l'indicateur de l'interface
+    reflete donc exactement le choix fait au moment de transcrire.
+    """
+    try:
+        import torch
+    except Exception as e:
+        emettre(diagnostic={"gpu": False, "nom": "",
+                            "detail": f"PyTorch introuvable ({e})"})
+        return
+    if cuda_utilisable(torch):
+        emettre(diagnostic={"gpu": True, "nom": torch.cuda.get_device_name(0),
+                            "detail": f"CUDA {torch.version.cuda}"})
+    elif torch.version.cuda is None:
+        emettre(diagnostic={"gpu": False, "nom": "",
+                            "detail": "PyTorch installe sans prise en charge CUDA"})
+    else:
+        emettre(diagnostic={"gpu": False, "nom": "",
+                            "detail": "aucune carte NVIDIA compatible ou pilote absent"})
+
+
 def main():
+    if "--diagnostic" in sys.argv:
+        return diagnostic()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("audio")
     ap.add_argument("--correspondant", default=None, help="2e piste (mode 2 canaux)")
-    ap.add_argument("--noms", default="", help='ex: "Olivier,Christian"')
     ap.add_argument("--speakers", type=int, default=2, help="0 = automatique")
     ap.add_argument("--modele", default="large-v3")
     ap.add_argument("--langue", default="fr")
@@ -265,7 +321,7 @@ def main():
         import whisperx as wx
         import torch
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cuda" if cuda_utilisable(torch) else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
         etape("demarrage", 5, f"{device} / {args.modele} / {compute_type}")
 

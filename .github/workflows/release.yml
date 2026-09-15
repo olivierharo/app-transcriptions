@@ -1,0 +1,80 @@
+# Publie une release a chaque tag de version (v1.0.0, v1.1.0...).
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# Construit l'installateur graphique sur une machine Windows et sur une
+# machine Ubuntu, puis les attache a la release. Les noms de fichiers ne
+# changent pas d'une version a l'autre : les liens
+# .../releases/latest/download/<fichier> pointent toujours vers la derniere.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write          # creer la release et y deposer les installateurs
+
+jobs:
+  construire:
+    strategy:
+      matrix:
+        # Ubuntu 22.04 : un binaire construit sur la plus ancienne version
+        # supportee fonctionne aussi sur les plus recentes (glibc).
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verifier que la version du code correspond au tag
+        shell: bash
+        run: |
+          code=$(python -c "import re;print(re.search(r'__version__\s*=\s*\"([^\"]+)\"',open('src/app/__init__.py').read()).group(1))")
+          test "v$code" = "${GITHUB_REF_NAME}" || { echo "src/app/__init__.py indique $code, le tag est ${GITHUB_REF_NAME}"; exit 1; }
+
+      - name: Bibliotheques Qt a embarquer (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxcb-cursor0 libegl1
+
+      - name: Construire l'installateur
+        run: |
+          python -m pip install pyinstaller==6.22.3 pyside6==6.11.2
+          python installation/construire_installateur.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installateur-${{ runner.os }}
+          path: dist/Transcriptions-Setup*
+
+  publier:
+    needs: construire
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installateurs
+          merge-multiple: true
+
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: installateurs/*
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            **Prérequis : carte graphique NVIDIA** (pilote 570 ou plus récent) et ~14 Go d'espace disque.
+
+            | Système | Fichier | Lancement |
+            |---|---|---|
+            | Windows 10 / 11 | **Transcriptions-Setup.exe** | double-clic |
+            | Ubuntu 22.04 / 24.04 | **Transcriptions-Setup-Ubuntu** | clic droit › Propriétés › *Autoriser l'exécution*, puis double-clic |
+
+            L'assistant télécharge ensuite le moteur et les modèles d'IA (15 à 45 min selon la connexion).
+
+            > **Windows affiche « Windows a protégé votre ordinateur » ?** L'installateur n'est pas signé
+            > numériquement. Cliquez sur **Informations complémentaires**, puis **Exécuter quand même**.

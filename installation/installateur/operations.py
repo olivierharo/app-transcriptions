@@ -452,9 +452,8 @@ class Installation:
         src = os.path.join(self.dest, "src")
         if os.path.normcase(os.path.abspath(charge)) == os.path.normcase(self.dest):
             raise ErreurInstallation("Le dossier d'installation ne peut pas être celui des sources.")
-        if os.path.isdir(src):
-            shutil.rmtree(src)
-        shutil.copytree(os.path.join(charge, "src"), src,
+        vider_dossier(src)
+        shutil.copytree(os.path.join(charge, "src"), src, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".env"))
         shutil.copy2(os.path.join(charge, "requirements-app.txt"), self.dest)
         if self.token:
@@ -521,6 +520,30 @@ class Installation:
         if WINDOWS:
             enregistrer_desinstallation(self.dest)
         self._avancer(1.0, "Installation terminée")
+
+
+def vider_dossier(dossier, delai=15):
+    """Vide dossier sans le supprimer : sous Windows, un dossier qui est le
+    dossier courant d'un programme (terminal, Explorateur) ne peut pas etre
+    supprime, mais son contenu si. Reessaie tant qu'un fichier est occupe
+    (application en train de se fermer)."""
+    os.makedirs(dossier, exist_ok=True)
+    limite = time.time() + delai
+    while True:
+        try:
+            for nom in os.listdir(dossier):
+                chemin = os.path.join(dossier, nom)
+                if os.path.isdir(chemin) and not os.path.islink(chemin):
+                    shutil.rmtree(chemin)
+                else:
+                    os.remove(chemin)
+            return
+        except PermissionError as e:
+            if time.time() > limite:
+                raise ErreurInstallation(
+                    "Des fichiers de l'application sont encore utilisés. Fermez Transcriptions, ainsi que "
+                    "les fenêtres (Explorateur, terminal) ouvertes dans son dossier, puis réessayez.", str(e))
+            time.sleep(1)
 
 
 def _paquet_installe(paquet):

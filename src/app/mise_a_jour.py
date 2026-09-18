@@ -119,9 +119,11 @@ def telecharger(info, progression=None, annule=None):
 def lancer_installateur(chemin, destination):
     """Lance l'installateur detache de l'application, qui doit ensuite se fermer."""
     # L'environnement de l'application (Qt, bibliotheques) ne doit pas se
-    # meler a celui de l'installateur, qui embarque les siens.
+    # meler a celui de l'installateur, qui embarque les siens. La version de
+    # test non plus : l'application relancee apres la mise a jour en heriterait.
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("QT_") and k not in ("LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME")}
+           if not k.startswith("QT_") and k not in ("LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME",
+                                                    "TRANSCRIPTIONS_VERSION_TEST")}
     commande = [chemin, "--mise-a-jour", destination]
     if WINDOWS:
         subprocess.Popen(commande, env=env, close_fds=True,

@@ -45,7 +45,10 @@
   .copie input { font-size:12px; font-family:ui-monospace,monospace; }
   .copie button { border:1px solid #d1d5db; background:#fff; border-radius:10px; padding:0 14px; font-size:15px; }
   b.action { color:var(--fonce); }
-  #sans-cle { display:none; }
+  #sans-cle, #accueil { display:none; }
+  #accueil { border:2px solid #c7d2fe; }
+  #accueil ol { margin-bottom:12px; }
+  .symbole { display:inline-block; border:1px solid #d1d5db; border-radius:6px; padding:0 5px; background:#f9fafb; }
 </style>
 </head>
 <body>
@@ -61,6 +64,22 @@
   </div>
 
   <div id="avec-cle">
+    <div class="carte" id="accueil">
+      <h2>📲 Ajouter à l'écran d'accueil</h2>
+      <p class="note">Une icône « Transcriptions » ouvrira directement cette page, votre boîte comprise.</p>
+      <ol id="accueil-ios">
+        <li>Dans <b>Safari</b>, touchez <span class="symbole">⬆︎</span> <b>Partager</b>
+          (en bas de l'écran, ou à droite de l'adresse).</li>
+        <li>Faites défiler et touchez <b>Sur l'écran d'accueil</b>.</li>
+        <li>Touchez <b>Ajouter</b>.</li>
+      </ol>
+      <ol id="accueil-android" hidden>
+        <li>Touchez le menu <span class="symbole">⋮</span> du navigateur.</li>
+        <li>Touchez <b>Ajouter à l'écran d'accueil</b>, puis <b>Ajouter</b>.</li>
+      </ol>
+      <button class="bouton second" onclick="masquerAccueil()">C'est fait / plus tard</button>
+    </div>
+
     <div class="carte">
       <label class="titre" for="titre">Titre (facultatif)</label>
       <input id="titre" type="text" placeholder="ex. Réunion projet – devis" autocomplete="off">
@@ -120,7 +139,7 @@
 
     <p class="note">🔒 Connexion chiffrée (HTTPS). Les enregistrements attendent sur le serveur jusqu'à ce que
       l'application de l'ordinateur les récupère, puis sont supprimés du serveur (au plus tard après 7 jours).
-      Astuce : Partager › <b>Sur l'écran d'accueil</b> pour garder cette page sous la main.</p>
+      <a href="#" onclick="afficherAccueil(); return false">Ajouter cette page à l'écran d'accueil</a></p>
   </div>
 </main>
 <script>
@@ -129,6 +148,26 @@
   let cle = new URLSearchParams(location.hash.slice(1)).get("cle") || "";
   try { if (cle) localStorage.setItem("cle", cle); else cle = localStorage.getItem("cle") || ""; } catch (e) {}
   if (!cle) { document.getElementById("sans-cle").style.display = "block"; document.getElementById("avec-cle").style.display = "none"; }
+
+  // Ecran d'accueil : l'icone reprend l'adresse affichee. On y remet la cle, car une page
+  // lancee depuis l'ecran d'accueil ne partage pas le stockage de Safari.
+  if (cle && !location.hash.includes("cle=")) history.replaceState(null, "", "#cle=" + encodeURIComponent(cle));
+  const autonome = navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+  const android = /Android/i.test(navigator.userAgent);
+  function afficherAccueil() {
+    document.getElementById("accueil-ios").hidden = android;
+    document.getElementById("accueil-android").hidden = !android;
+    document.getElementById("accueil").style.display = "block";
+    window.scrollTo(0, 0);
+  }
+  function masquerAccueil() {
+    document.getElementById("accueil").style.display = "none";
+    try { localStorage.setItem("accueil-vu", "1"); } catch (e) {}
+  }
+  let accueilVu = false;
+  try { accueilVu = localStorage.getItem("accueil-vu") === "1"; } catch (e) {}
+  if (cle && !autonome && !accueilVu && matchMedia("(pointer: coarse)").matches) afficherAccueil();
+
   const urlDepot = location.origin + "/api/depot?cle=" + encodeURIComponent(cle);
   document.getElementById("url").value = urlDepot;
 

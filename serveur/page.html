@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Transcriptions">
+<meta name="theme-color" content="#1e3a8a">
+<link rel="apple-touch-icon" href="/icone.png">
+<link rel="icon" href="/icone.png">
+<title>Transcriptions</title>
+<style>
+  :root { --bleu:#1d4ed8; --fonce:#1e3a8a; --gris:#6b7280; --fond:#f3f4f6; --vert:#15803d; --rouge:#dc2626; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:-apple-system,system-ui,"Segoe UI",sans-serif; background:var(--fond); color:#111827; }
+  header { background:linear-gradient(135deg,#2563eb,var(--fonce)); color:#fff; padding:22px 20px;
+           padding-top:max(22px, env(safe-area-inset-top)); display:flex; gap:14px; align-items:center; }
+  header img { width:48px; height:48px; border-radius:11px; }
+  header h1 { margin:0; font-size:21px; } header p { margin:2px 0 0; opacity:.85; font-size:14px; }
+  main { padding:16px 16px 40px; max-width:560px; margin:0 auto; }
+  .carte { background:#fff; border-radius:16px; padding:18px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .centre { text-align:center; }
+  #rec { width:120px; height:120px; border-radius:50%; border:6px solid #fee2e2; background:var(--rouge);
+         color:#fff; font-size:17px; font-weight:700; display:block; margin:6px auto 10px; }
+  #rec.actif { background:#fff; color:var(--rouge); border-color:var(--rouge); animation:pulse 1.6s infinite; }
+  @keyframes pulse { 50% { box-shadow:0 0 0 12px rgba(220,38,38,.15); } }
+  #chrono { font-size:32px; font-variant-numeric:tabular-nums; font-weight:600; }
+  .bouton { display:block; width:100%; border:0; border-radius:12px; padding:15px; font-size:17px; font-weight:600;
+            background:var(--bleu); color:#fff; text-align:center; }
+  .bouton.second { background:#eef2ff; color:var(--fonce); }
+  label.titre { display:block; font-size:14px; color:var(--gris); margin:0 0 6px; }
+  input[type=text] { width:100%; font-size:16px; padding:12px; border:1px solid #d1d5db; border-radius:10px; }
+  .envoi { margin-top:14px; font-size:15px; }
+  .barre { height:8px; background:#e5e7eb; border-radius:4px; overflow:hidden; margin-top:6px; }
+  .barre div { height:100%; width:0; background:var(--bleu); transition:width .2s; }
+  .ok { color:var(--vert); } .ko { color:var(--rouge); }
+  h2 { font-size:17px; margin:0 0 10px; }
+  ol { padding-left:20px; margin:8px 0; line-height:1.5; } li { margin-bottom:6px; }
+  .note { font-size:13px; color:var(--gris); line-height:1.45; }
+  details summary { font-weight:600; font-size:17px; cursor:pointer; }
+  .copie { display:flex; gap:8px; margin-top:8px; }
+  .copie input { font-size:12px; font-family:ui-monospace,monospace; }
+  .copie button { border:1px solid #d1d5db; background:#fff; border-radius:10px; padding:0 14px; font-size:15px; }
+  b.action { color:var(--fonce); }
+  #sans-cle { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <img src="/icone.png" alt="">
+  <div><h1>Transcriptions</h1><p id="boite">Envoyer un enregistrement à l'ordinateur</p></div>
+</header>
+<main>
+  <div class="carte centre" id="sans-cle">
+    <h2>Page à ouvrir depuis le QR code</h2>
+    <p class="note">Dans l'application Transcriptions de votre ordinateur, cliquez sur
+      <b>📱 iPhone</b>, puis scannez le QR code avec l'Appareil photo.</p>
+  </div>
+
+  <div id="avec-cle">
+    <div class="carte">
+      <label class="titre" for="titre">Titre (facultatif)</label>
+      <input id="titre" type="text" placeholder="ex. Réunion projet – devis" autocomplete="off">
+    </div>
+
+    <div class="carte centre">
+      <button id="rec">● REC</button>
+      <div id="chrono">0:00</div>
+      <p class="note" id="aide-rec">Touchez pour enregistrer. L'enregistrement est envoyé dès que vous l'arrêtez.<br>
+        Gardez cette page ouverte pendant l'enregistrement. Pour un <b>appel téléphonique</b>,
+        utilisez plutôt le Dictaphone (voir les raccourcis plus bas).</p>
+    </div>
+
+    <div class="carte">
+      <input id="fichier" type="file" accept="audio/*,.m4a,.mp3,.wav,.aac" multiple hidden>
+      <button class="bouton second" onclick="document.getElementById('fichier').click()">📁 Envoyer un fichier audio</button>
+      <p class="note">Un mémo du Dictaphone doit d'abord être copié dans Fichiers : Dictaphone › <b>•••</b> ›
+        <b>Partager</b> › <b>Enregistrer dans Fichiers</b>. Plus simple : le raccourci ci-dessous.</p>
+      <div id="envois"></div>
+    </div>
+
+    <div class="carte">
+      <details>
+        <summary>⚡ Raccourcis iPhone</summary>
+        <p class="note">Ils fonctionnent partout (Wi-Fi, 4G/5G), même ordinateur éteint : les fichiers
+          attendent sur le serveur. À créer une fois dans l'app <b>Raccourcis</b>, avec cette adresse :</p>
+        <div class="copie"><input id="url" type="text" readonly><button onclick="copier()">Copier</button></div>
+        <p id="copie-ok" class="note ok"></p>
+
+        <h2 style="margin-top:18px">1. « Envoyer à Transcriptions »</h2>
+        <p class="note">Envoie un mémo du Dictaphone depuis le bouton Partager.</p>
+        <ol>
+          <li>Raccourcis › <b>+</b> › renommez-le <i>Envoyer à Transcriptions</i>.</li>
+          <li>Touchez <b>ⓘ</b> › activez <b>Afficher dans la feuille de partage</b>.
+              En haut, « Recevoir » : ne gardez que <b>Fichiers</b> et <b>Média</b>.</li>
+          <li><b class="action">Obtenir le contenu de l'URL</b> : collez l'adresse, <b>Afficher plus</b> ›
+            Méthode <b>POST</b> › Corps de la requête <b>Fichier</b> › Fichier = <b>Entrée du raccourci</b>.</li>
+          <li><b class="action">Afficher la notification</b> : <i>Envoyé</i>.</li>
+        </ol>
+        <p class="note">Ensuite : Dictaphone › <b>•••</b> › <b>Partager</b> › <b>Envoyer à Transcriptions</b>.</p>
+
+        <h2 style="margin-top:18px">2. « Enregistrer un appel »</h2>
+        <p class="note">Bouton d'écran d'accueil : enregistre, garde une copie, envoie.</p>
+        <ol>
+          <li>Raccourcis › <b>+</b> › renommez-le <i>Enregistrer un appel</i>.</li>
+          <li><b class="action">Enregistrer de l'audio</b> : Début <b>Immédiatement</b>, Fin <b>Lors du toucher</b>.</li>
+          <li><b class="action">Enregistrer le fichier</b> : désactivez <b>Demander où enregistrer</b>
+            (dossier <i>Sur mon iPhone › Transcriptions</i>). Copie de secours si l'envoi échoue.</li>
+          <li><b class="action">Obtenir le contenu de l'URL</b> : comme au 1, Fichier = <b>Audio enregistré</b>.</li>
+          <li><b class="action">Afficher la notification</b> : <i>Envoyé</i>.</li>
+          <li><b>ⓘ</b> › <b>Ajouter à l'écran d'accueil</b>.</li>
+        </ol>
+        <p class="note">Vous aviez des raccourcis de l'ancienne version (réseau local) ? Remplacez simplement
+          l'adresse dans leur action « Obtenir le contenu de l'URL ».</p>
+      </details>
+    </div>
+
+    <p class="note">🔒 Connexion chiffrée (HTTPS). Les enregistrements attendent sur le serveur jusqu'à ce que
+      l'application de l'ordinateur les récupère, puis sont supprimés du serveur (au plus tard après 7 jours).
+      Astuce : Partager › <b>Sur l'écran d'accueil</b> pour garder cette page sous la main.</p>
+  </div>
+</main>
+<script>
+  // La cle est dans le fragment (#cle=...) : un fragment n'est jamais envoye au serveur
+  // ni ecrit dans les journaux. Memorisee pour l'icone d'ecran d'accueil.
+  let cle = new URLSearchParams(location.hash.slice(1)).get("cle") || "";
+  try { if (cle) localStorage.setItem("cle", cle); else cle = localStorage.getItem("cle") || ""; } catch (e) {}
+  if (!cle) { document.getElementById("sans-cle").style.display = "block"; document.getElementById("avec-cle").style.display = "none"; }
+  const urlDepot = location.origin + "/api/depot?cle=" + encodeURIComponent(cle);
+  document.getElementById("url").value = urlDepot;
+
+  if (cle) fetch("/api/verifier", { headers: { Authorization: "Bearer " + cle } })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(r => { document.getElementById("boite").textContent = "Boîte de " + r.utilisateur; })
+    .catch(() => { document.getElementById("boite").textContent = "⚠ Clé non reconnue : rescannez le QR code"; });
+
+  function copier() {
+    const champ = document.getElementById("url");
+    champ.focus(); champ.setSelectionRange(0, champ.value.length);
+    let ok = false;
+    if (navigator.clipboard) { navigator.clipboard.writeText(champ.value); ok = true; }
+    else { try { ok = document.execCommand("copy"); } catch (e) {} }
+    document.getElementById("copie-ok").textContent = ok ? "Adresse copiée." : "Sélectionnez l'adresse et copiez-la.";
+  }
+
+  function taille(o) { return o > 1048576 ? (o / 1048576).toFixed(1).replace(".", ",") + " Mo" : Math.ceil(o / 1024) + " Ko"; }
+
+  function envoyer(blob, nom) {
+    const bloc = document.createElement("div");
+    bloc.className = "envoi";
+    bloc.innerHTML = '<div class="nom"></div><div class="barre"><div></div></div><div class="etat note"></div>';
+    bloc.querySelector(".nom").textContent = nom + " (" + taille(blob.size) + ")";
+    document.getElementById("envois").prepend(bloc);
+    const barre = bloc.querySelector(".barre div"), etat = bloc.querySelector(".etat");
+    const titre = document.getElementById("titre").value.trim();
+    const essai = () => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/depot?nom=" + encodeURIComponent(nom) + "&titre=" + encodeURIComponent(titre));
+      xhr.setRequestHeader("Authorization", "Bearer " + cle);
+      xhr.setRequestHeader("Content-Type", blob.type || "application/octet-stream");
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) { barre.style.width = (100 * e.loaded / e.total) + "%";
+        etat.className = "etat note"; etat.textContent = "Envoi… " + Math.round(100 * e.loaded / e.total) + " %"; } };
+      xhr.onload = () => {
+        let r = {}; try { r = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status === 200) { barre.style.width = "100%"; etat.className = "etat ok";
+          etat.textContent = "✓ Déposé. L'ordinateur le transcrira dès que l'application sera ouverte.";
+          document.getElementById("titre").value = ""; }
+        else echec(r.erreur || ("Erreur " + xhr.status));
+      };
+      xhr.onerror = () => echec("Pas de connexion.");
+      xhr.send(blob);
+    };
+    const echec = (msg) => {
+      etat.className = "etat ko"; etat.textContent = "✗ " + msg + " ";
+      const b = document.createElement("button"); b.textContent = "Réessayer"; b.className = "bouton second";
+      b.style.marginTop = "8px"; b.onclick = () => { b.remove(); essai(); };
+      etat.appendChild(b);
+    };
+    essai();
+  }
+
+  document.getElementById("fichier").addEventListener("change", (ev) => {
+    for (const f of ev.target.files) envoyer(f, f.name);
+    ev.target.value = "";
+  });
+
+  // ------------------------------------------------ enregistrement direct --
+  let enreg = null, morceaux = [], debut = 0, minuteur = null, verrou = null, flux = null;
+  const bouton = document.getElementById("rec"), chrono = document.getElementById("chrono");
+
+  bouton.addEventListener("click", async () => {
+    if (enreg) { enreg.stop(); return; }
+    try {
+      flux = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false } });
+    } catch (e) {
+      alert("Micro inaccessible : autorisez-le pour ce site (Réglages › Safari › Micro)."); return;
+    }
+    const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+    enreg = new MediaRecorder(flux, type ? { mimeType: type } : undefined);
+    morceaux = [];
+    enreg.ondataavailable = (e) => { if (e.data.size) morceaux.push(e.data); };
+    enreg.onstop = () => {
+      flux.getTracks().forEach(t => t.stop());
+      clearInterval(minuteur);
+      if (verrou) { verrou.release().catch(() => {}); verrou = null; }
+      bouton.classList.remove("actif"); bouton.textContent = "● REC";
+      const mime = enreg.mimeType || type || "audio/mp4";
+      const ext = mime.includes("webm") ? ".webm" : ".m4a";
+      const d = new Date(), nom = "Enregistrement " + d.toLocaleString("fr-FR").replace(/[/:]/g, "-") + ext;
+      enreg = null;
+      envoyer(new Blob(morceaux, { type: mime.split(";")[0] }), nom);
+    };
+    enreg.start(1000);
+    debut = Date.now();
+    bouton.classList.add("actif"); bouton.textContent = "■ STOP";
+    minuteur = setInterval(() => { const s = Math.floor((Date.now() - debut) / 1000);
+      chrono.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }, 250);
+    // Empeche l'ecran de se verrouiller, ce qui couperait l'enregistrement
+    try { verrou = await navigator.wakeLock.request("screen"); } catch (e) {}
+  });
+
+  window.addEventListener("beforeunload", (e) => { if (enreg) { e.preventDefault(); e.returnValue = ""; } });
+</script>
+</body>
+</html>

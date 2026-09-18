@@ -4,7 +4,9 @@ Application locale d'enregistrement et de transcription de conversations
 (français), accélérée par GPU, avec identification des locuteurs.
 Windows 10, Windows 11 et Ubuntu (22.04, 24.04).
 
-Tout est calculé sur la machine : aucun audio n'est envoyé sur Internet.
+La transcription est calculée sur la machine : aucun audio n'est envoyé à un
+service d'IA. Seuls les enregistrements envoyés depuis l'iPhone transitent,
+chiffrés, par le relais de l'équipe, qui les supprime dès leur récupération.
 
 ---
 
@@ -104,32 +106,26 @@ Le second mode enregistre deux fichiers (`…moi.wav`, `…correspondant.wav`) :
 boucle WASAPI sous Windows, source « monitor » PulseAudio/PipeWire sous Ubuntu
 (via `parec`). Chaque piste ne contenant qu'une voix, l'attribution est certaine.
 
-### Recevoir depuis l'iPhone
+### Envoyer depuis l'iPhone
 
-Bouton **« 📱 Recevoir depuis l'iPhone »** : l'application affiche un QR code.
-L'iPhone (même Wi-Fi) le scanne avec l'Appareil photo, et Safari ouvre une page
-servie par l'ordinateur lui-même. On y choisit un enregistrement du Dictaphone,
-qui arrive dans la liste et se transcrit automatiquement.
+L'iPhone dépose ses enregistrements dans une **boîte aux lettres** sur le relais
+de l'équipe (serveur `serveur/`, en HTTPS). L'application relève la boîte toutes
+les 30 s, range les fichiers dans le dossier des enregistrements, les supprime du
+serveur, puis les transcrit.
 
-- **Aucun cloud** : le fichier va directement de l'iPhone au PC, sur le réseau
-  local. Chaque requête doit porter une clé secrète (128 bits) contenue dans le
-  QR code ; « Nouveau code secret… » la renouvelle.
-- **Raccourcis iPhone**, expliqués pas à pas sur la page (app *Raccourcis*,
-  livrée avec l'iPhone, aucun App Store) :
-  - *Envoyer à Transcriptions* — depuis le bouton Partager du Dictaphone ;
-  - *Enregistrer un appel* — bouton sur l'écran d'accueil qui enregistre, garde
-    une copie sur l'iPhone, puis envoie.
-
-  Ils demandent que la réception reste active : cocher « Rester à l'écoute tant
-  que l'application est ouverte ».
-- Le serveur écoute sur le port **47800** (ou le suivant libre, mémorisé), et
-  seulement quand la fenêtre de réception est ouverte ou l'option cochée.
-- Sous Windows, accepter la demande du pare-feu pour les **réseaux privés**.
-- Si l'adresse IP du PC change (box qui en attribue une nouvelle), la fenêtre le
-  signale : rescanner le QR code et mettre à jour l'adresse des raccourcis. Une
-  réservation d'adresse (bail DHCP fixe) dans la box évite ce cas.
-- Enregistrer directement dans la page web n'est pas possible : Safari réserve
-  le micro aux sites HTTPS. On passe donc par le Dictaphone ou par le raccourci.
+- **Partout** : Wi-Fi, 4G/5G, adresse fixe. Le PC peut être éteint au moment de
+  l'envoi : le fichier attend (7 jours au plus). Rien à ouvrir sur la box.
+- **Première fois** : bouton **« 📱 iPhone »** → coller le *code de connexion*
+  (`TR1-…`) fourni par l'administrateur → l'application affiche un QR code à
+  scanner avec l'iPhone.
+- **Sur l'iPhone** : la page peut **enregistrer directement** (bouton ● REC,
+  écran maintenu allumé), envoyer un fichier, et explique les deux **raccourcis
+  iPhone** (*Envoyer à Transcriptions* depuis le Dictaphone, *Enregistrer un
+  appel* sur l'écran d'accueil). Pour un appel téléphonique, passer par le
+  Dictaphone : Safari coupe l'enregistrement quand on change d'application.
+- **Sécurité** : deux clés par personne. La clé d'*envoi* (iPhone) ne permet que
+  de déposer ; seule la clé de *retrait* (PC) permet de lire. Le serveur ne garde
+  que leurs empreintes SHA-256, et ne journalise ni les URL ni les clés.
 
 ---
 
@@ -304,12 +300,48 @@ src/
     ├── enregistreur.py capture 16 kHz mono, une ou deux pistes
     ├── bibliotheque.py index des enregistrements, renommage disque
     ├── moteur.py       WhisperX en sous-processus, progression en JSON
-    ├── reception.py    serveur local + page web : envoi depuis l'iPhone
+    ├── relais.py       relève de la boîte aux lettres iPhone sur le serveur
     └── prechargement.py  téléchargement des modèles pendant l'installation
 ```
 
 Le moteur tourne dans un **processus séparé** : l'interface ne gèle jamais et un
 plantage GPU ne fait pas tomber l'application.
+
+---
+
+## Relais iPhone (serveur)
+
+Dossier `serveur/` : Python (bibliothèque standard uniquement) derrière Caddy,
+qui fournit le HTTPS (certificat Let's Encrypt automatique).
+
+**Déploiement sur un VPS** (Docker installé, ports 80 et 443 ouverts) :
+
+1. Chez le registrar, créer un enregistrement DNS **A** :
+   `transcriptions.mondomaine.fr` → adresse IP du VPS.
+2. Sur le VPS :
+
+   ```bash
+   git clone https://github.com/olivierharo/app-transcriptions.git
+   cd app-transcriptions/serveur
+   cp .env.exemple .env          # puis y mettre DOMAINE=transcriptions.mondomaine.fr
+   docker compose up -d --build
+   ```
+
+3. Créer un compte par membre de l'équipe ; la commande affiche son code de
+   connexion `TR1-…`, à lui transmettre par un canal sûr :
+
+   ```bash
+   docker compose exec relais python admin.py creer olivier
+   docker compose exec relais python admin.py lister
+   docker compose exec relais python admin.py supprimer olivier
+   ```
+
+   `creer` sur un compte existant renouvelle ses clés (en cas de perte ou de fuite).
+
+4. Mise à jour : `git pull && docker compose up -d --build`.
+
+Réglages (variables d'environnement du service `relais`) : `RELAIS_TAILLE_MAX_MO`
+(2048), `RELAIS_QUOTA_MO` par boîte (5120), `RELAIS_CONSERVATION_JOURS` (7).
 
 ---
 

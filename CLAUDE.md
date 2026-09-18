@@ -51,10 +51,11 @@ messages et documentation **en français** (identifiants sans accents dans le co
 ## Tests
 
 Pas de suite automatisée. Vérifier par des scripts ponctuels, hors du dépôt :
-serveur relais lancé localement (`RELAIS_DONNEES`, `RELAIS_PORT`), `admin.py creer`,
-appels `curl`, fenêtre Qt pilotée par `QTimer` avec `APPDATA` et
-`DOSSIER_ENREGISTREMENTS` pointant vers des dossiers temporaires, pour ne jamais
-toucher aux réglages ni aux enregistrements réels de l'utilisateur.
+- relais : compte temporaire (`php bin/console app:compte:creer essai-…`), appels
+  `curl` sur https://transcriptions.arobases.fr, puis `app:compte:supprimer` ;
+- application de bureau (sur un poste NVIDIA) : fenêtre Qt pilotée par `QTimer`,
+  avec `APPDATA` et `DOSSIER_ENREGISTREMENTS` pointant vers des dossiers
+  temporaires, pour ne jamais toucher aux réglages ni aux enregistrements réels.
 
 ## Environnement de travail : le serveur vps4
 

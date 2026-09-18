@@ -18,9 +18,10 @@ messages et documentation **en français** (identifiants sans accents dans le co
   `src/app/__init__.py`. Installateurs non signés (SmartScreen accepté).
 - **Dépôt public**, licence MIT. Aucune donnée client dans git : `local/`,
   audio, transcriptions et `.env` sont ignorés. Vérifier `git status` avant commit.
-- **iPhone** : boîte aux lettres sur un relais HTTPS (`serveur/`, Docker + Caddy),
-  une boîte par membre, clés d'envoi / de retrait séparées. Le mode réseau local
-  (QR + serveur dans l'app) a été abandonné : l'adresse changeait selon le réseau.
+- **iPhone** : boîte aux lettres sur le relais **Symfony** `relais/`
+  (https://transcriptions.arobases.fr), une boîte par membre, clés d'envoi / de
+  retrait séparées. Choix de l'utilisateur : Symfony + MySQL/Doctrine sur son
+  serveur Apache (pas de Docker). Le mode réseau local a été abandonné.
 
 ## Structure
 
@@ -30,7 +31,8 @@ messages et documentation **en français** (identifiants sans accents dans le co
   iPhone), `prechargement.py` (modèles téléchargés à l'installation).
 - `installation/` : installateur graphique (`operations.py` = logique,
   `assistant.py` = écrans, `lanceur.py` = entrée / désinstallation).
-- `serveur/` : relais iPhone (`relais.py` stdlib, `admin.py` comptes, `page.html`).
+- `relais/` : relais iPhone Symfony 7.4 (API `src/Controller/RelaisController.php`,
+  stockage `src/Service/Boites.php`, commandes `app:compte:*` et `app:purger`).
 
 ## Pièges connus
 
@@ -53,3 +55,18 @@ serveur relais lancé localement (`RELAIS_DONNEES`, `RELAIS_PORT`), `admin.py cr
 appels `curl`, fenêtre Qt pilotée par `QTimer` avec `APPDATA` et
 `DOSSIER_ENREGISTREMENTS` pointant vers des dossiers temporaires, pour ne jamais
 toucher aux réglages ni aux enregistrements réels de l'utilisateur.
+
+## Environnement de travail : le serveur vps4
+
+Le projet vit désormais sur le serveur Ubuntu 22.04 `vps4.arobases.fr` (SSH port
+**1664**, compte `transcriptions`), dans `~/app-transcriptions`. Le relais y est en
+production : `~/www` → `relais/`, Apache + PHP 8.2 (mod_php), MySQL (base et
+utilisateur `transcriptions`, accès dans `relais/.env.local`), purge par crontab.
+
+- **Pas de GPU ni d'environnement graphique** sur ce serveur : on n'y lance ni
+  l'application de bureau ni une transcription. Les tester sur un poste NVIDIA.
+- **Pas de sudo** : toute modification d'Apache, de PHP ou de paquets système se
+  fait par l'utilisateur (root). Lui fournir les lignes exactes à ajouter.
+- Modifier le relais, c'est modifier la production : tester avec un compte
+  temporaire (`app:compte:creer essai-…` puis `app:compte:supprimer`), jamais
+  avec les comptes réels.

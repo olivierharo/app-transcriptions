@@ -109,7 +109,7 @@ boucle WASAPI sous Windows, source « monitor » PulseAudio/PipeWire sous Ubuntu
 ### Envoyer depuis l'iPhone
 
 L'iPhone dépose ses enregistrements dans une **boîte aux lettres** sur le relais
-de l'équipe (serveur `serveur/`, en HTTPS). L'application relève la boîte toutes
+de l'équipe (application Symfony `relais/`, https://transcriptions.arobases.fr). L'application relève la boîte toutes
 les 30 s, range les fichiers dans le dossier des enregistrements, les supprime du
 serveur, puis les transcrit.
 
@@ -311,37 +311,44 @@ plantage GPU ne fait pas tomber l'application.
 
 ## Relais iPhone (serveur)
 
-Dossier `serveur/` : Python (bibliothèque standard uniquement) derrière Caddy,
-qui fournit le HTTPS (certificat Let's Encrypt automatique).
+Application **Symfony 7.4** dans `relais/` (PHP 8.2, Doctrine + MySQL), servie par
+Apache sur **https://transcriptions.arobases.fr** (`~/www` est un lien vers
+`~/app-transcriptions/relais`, le VirtualHost pointe sur `~/www/public`).
 
-**Déploiement sur un VPS** (Docker installé, ports 80 et 443 ouverts) :
+- API : `POST /api/depot` (clé d'envoi), `GET /api/verifier`, `GET /api/boite`,
+  `GET|DELETE /api/boite/{id}` (clé de retrait) — `src/Controller/RelaisController.php`.
+- Comptes (table `compte`, empreintes SHA-256 des clés) et dépôts (table `depot`) en
+  base ; fichiers audio dans `relais/var/boites/<compte>/`.
+- Page iPhone : `templates/page.html.twig`.
+- Configuration : `relais/.env` (valeurs par défaut) et `relais/.env.local` (serveur,
+  jamais versionné : `DATABASE_URL`, `APP_SECRET`, `APP_ENV=prod`). Dans
+  `DATABASE_URL`, les `%` du mot de passe encodé doivent être doublés (`%%`).
 
-1. Chez le registrar, créer un enregistrement DNS **A** :
-   `transcriptions.mondomaine.fr` → adresse IP du VPS.
-2. Sur le VPS :
+**Gérer les comptes** (sur le serveur, dans `~/app-transcriptions/relais`) :
 
-   ```bash
-   git clone https://github.com/olivierharo/app-transcriptions.git
-   cd app-transcriptions/serveur
-   cp .env.exemple .env          # puis y mettre DOMAINE=transcriptions.mondomaine.fr
-   docker compose up -d --build
-   ```
+```bash
+php bin/console app:compte:creer olivier     # affiche le code de connexion TR1-…
+php bin/console app:compte:lister
+php bin/console app:compte:supprimer olivier
+```
 
-3. Créer un compte par membre de l'équipe ; la commande affiche son code de
-   connexion `TR1-…`, à lui transmettre par un canal sûr :
+`creer` sur un compte existant renouvelle ses clés (perte ou fuite).
 
-   ```bash
-   docker compose exec relais python admin.py creer olivier
-   docker compose exec relais python admin.py lister
-   docker compose exec relais python admin.py supprimer olivier
-   ```
+**Mettre à jour** :
 
-   `creer` sur un compte existant renouvelle ses clés (en cas de perte ou de fuite).
+```bash
+cd ~/app-transcriptions && git pull
+cd relais && composer install --no-dev -o && php bin/console doctrine:migrations:migrate -n
+php bin/console cache:clear
+```
 
-4. Mise à jour : `git pull && docker compose up -d --build`.
+Purge des dépôts non récupérés : `php bin/console app:purger`, lancée chaque nuit
+par la crontab du compte `transcriptions`. Réglages dans `.env` :
+`RELAIS_TAILLE_MAX_MO` (2048), `RELAIS_QUOTA_MO` par boîte (5120),
+`RELAIS_CONSERVATION_JOURS` (7).
 
-Réglages (variables d'environnement du service `relais`) : `RELAIS_TAILLE_MAX_MO`
-(2048), `RELAIS_QUOTA_MO` par boîte (5120), `RELAIS_CONSERVATION_JOURS` (7).
+> Le site passe par **Cloudflare** : son offre gratuite refuse les envois de plus de
+> 100 Mo (≈ 3 h de mémo du Dictaphone).
 
 ---
 

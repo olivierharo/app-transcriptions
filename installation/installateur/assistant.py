@@ -185,10 +185,13 @@ class FilInstallation(QThread):
 class AssistantInstallation(QWidget):
     TITRES = ["Bienvenue", "Emplacement", "Séparation des voix", "Installation", "Terminé"]
 
-    def __init__(self, auto=False, destination=None):
+    def __init__(self, auto=False, destination=None, mise_a_jour=False):
         super().__init__()
         self.auto = auto
-        self.setWindowTitle("Installation de Transcriptions")
+        # Mise a jour lancee par l'application : aucune question, seulement la
+        # progression, puis l'application est relancee.
+        self.mise_a_jour = mise_a_jour
+        self.setWindowTitle("Mise à jour de Transcriptions" if mise_a_jour else "Installation de Transcriptions")
         self.setWindowIcon(QIcon(chemin_ressource("icone.png")))
         self.setFixedSize(820, 560)
         self.fil = None
@@ -306,7 +309,9 @@ class AssistantInstallation(QWidget):
         self.pages.addWidget(p)
 
     def _page_progression(self):
-        p = Page("Installation en cours", "Vous pouvez réduire cette fenêtre, l'installation continue.")
+        p = Page("Mise à jour en cours" if self.mise_a_jour else "Installation en cours",
+                 "Transcriptions redémarrera toute seule à la fin." if self.mise_a_jour
+                 else "Vous pouvez réduire cette fenêtre, l'installation continue.")
         self.label_etape = label("Préparation…", 12, True)
         p.v.addWidget(self.label_etape)
         p.v.addSpacing(6)
@@ -428,8 +433,19 @@ class AssistantInstallation(QWidget):
         self.label_gpu.setText(f"✓  Carte graphique compatible : {nom} (pilote {pilote})")
         self.label_gpu.setStyleSheet(f"color:{VERT};")
         self.bouton_suivant.setEnabled(True)
-        if self.auto:
+        if self.mise_a_jour:
+            self._aller(3)
+            self.label_etape.setText("Fermeture de l'application…")
+            # L'application se ferme d'elle-meme apres avoir lance la mise a
+            # jour ; on arrete ce qui tournerait encore (moteur) avant de
+            # remplacer les fichiers.
+            QTimer.singleShot(3000, self._fermer_puis_demarrer)
+        elif self.auto:
             QTimer.singleShot(300, self._demarrer)
+
+    def _fermer_puis_demarrer(self):
+        op.fermer_application(self.champ_dest.text().strip())
+        QTimer.singleShot(1000, self._demarrer)
 
     def _bloquer(self, emoji, titre, resume, texte):
         p = QWidget()
@@ -538,10 +554,14 @@ class AssistantInstallation(QWidget):
                 print("ECHEC:", message, detail[-1500:], flush=True)
                 QApplication.exit(1)
                 return
-            self.label_etape.setText("L'installation n'a pas abouti")
+            self.label_etape.setText("La mise à jour n'a pas abouti" if self.mise_a_jour
+                                     else "L'installation n'a pas abouti")
             self.label_etape.setStyleSheet(f"color:{ROUGE};")
-            self.label_detail.setText(message + "\n\nVous pouvez relancer l'installateur : "
-                                      "ce qui a déjà été téléchargé sera conservé.")
+            self.label_detail.setText(message + (
+                "\n\nRelancez Transcriptions : elle vous proposera de nouveau la mise à jour. Si elle ne "
+                "démarre plus, réinstallez-la depuis github.com/olivierharo/app-transcriptions/releases."
+                if self.mise_a_jour else
+                "\n\nVous pouvez relancer l'installateur : ce qui a déjà été téléchargé sera conservé."))
             if detail:
                 self.journal.appendPlainText("\n" + detail)
                 self.bouton_details.setChecked(True)
@@ -562,6 +582,15 @@ class AssistantInstallation(QWidget):
             "Pour désinstaller : Paramètres › Applications installées › Transcriptions."
             if op.WINDOWS else "Pour désinstaller : « Désinstaller Transcriptions » dans le menu des applications.")
         self.fil = None
+        if self.mise_a_jour:
+            # Raccourcis inchanges : ceux que l'utilisateur a supprimes ne
+            # reapparaissent pas.
+            if self.auto:
+                print("SUCCES", texte, flush=True)
+            else:
+                op.lancer_application(dest)
+            QApplication.exit(0)
+            return
         self._aller(4)
         if self.auto:
             print("SUCCES", texte, flush=True)

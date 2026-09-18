@@ -37,19 +37,27 @@ demandent le mot de passe, via la fenêtre standard) :
 5. **Terminé** — cases à cocher : menu Démarrer / menu des applications,
    Bureau, lancer l'application.
 
-Relancer l'installateur met l'application à jour sans retélécharger ce qui est
+**Mises à jour** : à partir de la version 1.3.0, l'application vérifie au
+démarrage (puis chaque jour) s'il existe une version plus récente sur GitHub et
+affiche un bandeau « Mettre à jour ». Un clic télécharge l'installateur, vérifie
+son empreinte SHA-256, puis le lance en mode `--mise-a-jour` : aucune question,
+une fenêtre de progression, et l'application redémarre. Le bouton est inactif
+pendant un enregistrement ou une transcription. Pour tester sans publier de
+version : lancer l'application avec `TRANSCRIPTIONS_VERSION_TEST=1.0.0`.
+
+Relancer l'installateur met aussi l'application à jour sans retélécharger ce qui est
 déjà présent. Désinstallation : « Applications installées » sous Windows,
 « Désinstaller Transcriptions » dans le menu des applications sous Ubuntu ; les
 enregistrements sont conservés.
 
 ### Publier une nouvelle version
 
-1. Mettre à jour `__version__` dans `src/app/__init__.py` (ex. `1.1.0`) et commiter.
+1. Mettre à jour `__version__` dans `src/app/__init__.py` (ex. `1.3.0`) et commiter.
 2. Pousser le tag correspondant :
 
-```bat
-git tag v1.1.0
-git push origin v1.1.0
+```bash
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 Le workflow `.github/workflows/release.yml` construit alors l'installateur sur
@@ -301,6 +309,7 @@ src/
     ├── bibliotheque.py index des enregistrements, renommage disque
     ├── moteur.py       WhisperX en sous-processus, progression en JSON
     ├── relais.py       relève de la boîte aux lettres iPhone sur le serveur
+    ├── mise_a_jour.py  vérification des versions sur GitHub, mise à jour en un clic
     └── prechargement.py  téléchargement des modèles pendant l'installation
 ```
 

@@ -3,6 +3,7 @@ Point d'entree de l'installateur (et du desinstallateur).
 
     Transcriptions-Setup.exe                      assistant d'installation
     Transcriptions-Setup.exe --desinstaller [DOSSIER]
+    Transcriptions-Setup.exe --mise-a-jour DOSSIER     (lance par l'application)
     "Désinstaller Transcriptions.exe"             (copie placee dans l'installation)
 
 Options de test : --auto (aucun clic, raccourcis non lances), --destination DOSSIER.
@@ -38,6 +39,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--desinstaller", nargs="?", const="", default=None)
     ap.add_argument("--destination", default=None)
+    ap.add_argument("--mise-a-jour", dest="mise_a_jour", default=None)
     ap.add_argument("--auto", action="store_true")
     args = ap.parse_args()
 
@@ -67,6 +69,8 @@ def main():
     assistant.appliquer_theme(app)
     if args.desinstaller is not None:
         fenetre = assistant.AssistantDesinstallation(dest, auto=args.auto)
+    elif args.mise_a_jour:
+        fenetre = assistant.AssistantInstallation(auto=args.auto, destination=args.mise_a_jour, mise_a_jour=True)
     else:
         fenetre = assistant.AssistantInstallation(auto=args.auto, destination=args.destination)
     fenetre.show()

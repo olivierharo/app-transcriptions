@@ -28,7 +28,8 @@ messages et documentation **en français** (identifiants sans accents dans le co
 - `src/app/` : application — `fenetre.py` (UI), `enregistreur.py` (capture),
   `moteur.py` (WhisperX en sous-processus, progression JSON sur stdout),
   `bibliotheque.py` (index des enregistrements), `relais.py` (relève de la boîte
-  iPhone), `prechargement.py` (modèles téléchargés à l'installation).
+  iPhone), `prechargement.py` (modèles téléchargés à l'installation),
+  `mise_a_jour.py` (release GitHub → installateur lancé en `--mise-a-jour`).
 - `installation/` : installateur graphique (`operations.py` = logique,
   `assistant.py` = écrans, `lanceur.py` = entrée / désinstallation).
 - `relais/` : relais iPhone Symfony 7.4 (API `src/Controller/RelaisController.php`,

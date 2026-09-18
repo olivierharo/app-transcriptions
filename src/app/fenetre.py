@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import threading
 
 from PySide6.QtCore import Qt, QTimer, QProcess, QProcessEnvironment, QUrl, QObject, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QColor, QIcon, QPixmap
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QTextEdit, QProgressBar, QGroupBox, QSplitter, QHeaderView, QMessageBox,
-    QAbstractItemView, QInputDialog, QFileDialog, QStackedWidget, QDialog, QCheckBox,
+    QAbstractItemView, QInputDialog, QFileDialog, QStackedWidget, QDialog, QCheckBox, QFrame,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,6 +18,7 @@ import config
 from app import enregistreur as enr
 from app.bibliotheque import Bibliotheque, formater_duree, formater_date
 from app import relais as rl
+from app import mise_a_jour as maj
 
 LIBELLES_ETAT = {
     "nouveau": "Non transcrit",
@@ -86,7 +88,7 @@ def _environnement_moteur():
 class Fenetre(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Transcriptions")
+        self.setWindowTitle(f"Transcriptions {maj.version_installee()}")
         self.resize(1150, 760)
 
         self.dossier = config.dossier_enregistrements()
@@ -104,6 +106,18 @@ class Fenetre(QMainWindow):
         self.pont.statut.connect(self._statut_relais)
         self.relais = rl.Relais(self.dossier, self.pont.fichier_recu.emit, self.pont.statut.emit)
         self.dialogue_iphone = None
+
+        # Mises a jour : verifiees sur GitHub au demarrage puis chaque jour,
+        # dans un fil secondaire.
+        self.pont_maj = _PontMiseAJour()
+        self.pont_maj.disponible.connect(self._maj_disponible)
+        self.pont_maj.progression.connect(self._maj_progression)
+        self.pont_maj.telecharge.connect(self._maj_telecharge)
+        self.pont_maj.erreur.connect(self._maj_erreur)
+        self.maj_info = None
+        self.maj_fichier = None
+        self.maj_annulee = False
+        self.maj_telechargement = False
 
         self._construire()
         self._charger_peripheriques()
@@ -131,6 +145,7 @@ class Fenetre(QMainWindow):
         principal.setContentsMargins(12, 12, 12, 12)
         principal.setSpacing(10)
 
+        principal.addWidget(self._bandeau_mise_a_jour())
         principal.addWidget(self._barre_dossier())
         principal.addWidget(self._bloc_enregistrement())
 
@@ -224,6 +239,7 @@ class Fenetre(QMainWindow):
                                    + diag.get("detail", "") + ").")
                 self.pages.setCurrentWidget(self.page_principale)
                 self.relais.demarrer()
+                self._demarrer_verification_maj()
             else:
                 self._bloquer(self._page_message(
                     "🤷 🍫", "Pas de bras, pas de chocolat !",
@@ -637,6 +653,142 @@ class Fenetre(QMainWindow):
         self.relais.arreter()
         ev.accept()
 
+    # -------------------------------------------------------- mise a jour --
+    def _bandeau_mise_a_jour(self):
+        self.bandeau_maj = QFrame()
+        self.bandeau_maj.setObjectName("bandeauMaj")
+        self.bandeau_maj.setStyleSheet("#bandeauMaj { background:#dbeafe; border:1px solid #93c5fd;"
+                                       " border-radius:6px; } #bandeauMaj QLabel { color:#1e3a8a; }")
+        h = QHBoxLayout(self.bandeau_maj)
+        h.setContentsMargins(12, 6, 8, 6)
+        self.label_maj = QLabel()
+        f = self.label_maj.font(); f.setBold(True); self.label_maj.setFont(f)
+        h.addWidget(self.label_maj, 1)
+        self.bouton_nouveautes = QPushButton("Voir les nouveautés")
+        self.bouton_nouveautes.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(self.maj_info["page"])) if self.maj_info else None)
+        self.bouton_maj = QPushButton("Mettre à jour")
+        self.bouton_maj.clicked.connect(self._mettre_a_jour)
+        self.bouton_plus_tard = QPushButton("Plus tard")
+        self.bouton_plus_tard.clicked.connect(self._maj_plus_tard)
+        for b in (self.bouton_nouveautes, self.bouton_maj, self.bouton_plus_tard):
+            h.addWidget(b)
+        self.bandeau_maj.hide()
+        return self.bandeau_maj
+
+    def _demarrer_verification_maj(self):
+        # Seulement pour une application installee par l'installateur (pas
+        # depuis une copie de developpement du depot).
+        if not os.path.exists(os.path.join(_racine(), "installation.json")):
+            return
+        self._verifier_maj()
+        self.minuteur_maj = QTimer(self)
+        self.minuteur_maj.timeout.connect(self._verifier_maj)
+        self.minuteur_maj.start(24 * 3600 * 1000)
+        # Le bouton est inactif pendant un enregistrement ou une transcription.
+        self.minuteur_occupe = QTimer(self)
+        self.minuteur_occupe.timeout.connect(self._maj_etat_bouton)
+        self.minuteur_occupe.start(1000)
+
+    def _occupe(self):
+        return self.enregistreur.en_cours or self.proc is not None or bool(self.file_attente)
+
+    def _maj_etat_bouton(self):
+        occupe = self._occupe()
+        self.bouton_maj.setEnabled(not occupe)
+        self.bouton_maj.setToolTip("Disponible une fois l'enregistrement ou la transcription terminé."
+                                   if occupe else "")
+
+    def _verifier_maj(self):
+        if self.maj_fichier or self.maj_telechargement:
+            return      # telechargement en cours ou deja fait
+
+        def fil():
+            try:
+                info = maj.verifier()
+            except maj.ErreurMiseAJour:
+                return  # hors ligne : on reessaiera au prochain passage
+            if info:
+                self.pont_maj.disponible.emit(info)
+        threading.Thread(target=fil, daemon=True).start()
+
+    def _maj_disponible(self, info):
+        self.maj_info = info
+        self.label_maj.setText(f"🔔 La version {info['version']} de Transcriptions est disponible "
+                               f"(vous avez la {maj.version_installee()}).")
+        self.bouton_maj.setText("Mettre à jour")
+        self.bouton_nouveautes.show()
+        self.bouton_maj.show()
+        self.bouton_plus_tard.setText("Plus tard")
+        self.bouton_plus_tard.show()
+        self._maj_etat_bouton()
+        self.bandeau_maj.show()
+
+    def _maj_plus_tard(self):
+        if self.maj_telechargement:
+            self.maj_annulee = True
+        self.bandeau_maj.hide()
+
+    def _mettre_a_jour(self):
+        if self._occupe():
+            return
+        if self.maj_fichier:
+            self._installer_maj()
+            return
+        info = self.maj_info
+        self.maj_annulee = False
+        self.maj_telechargement = True
+        self.label_maj.setText(f"Téléchargement de la version {info['version']}…")
+        self.bouton_nouveautes.hide()
+        self.bouton_maj.hide()
+        self.bouton_plus_tard.setText("Annuler")
+
+        def fil():
+            try:
+                chemin = maj.telecharger(info, self.pont_maj.progression.emit, lambda: self.maj_annulee)
+            except (maj.ErreurMiseAJour, OSError) as e:
+                self.pont_maj.erreur.emit(str(e))
+                return
+            finally:
+                self.maj_telechargement = False
+            if chemin:
+                self.pont_maj.telecharge.emit(chemin)
+        threading.Thread(target=fil, daemon=True).start()
+
+    def _maj_progression(self, recu, total):
+        pct = f" — {100 * recu // total} %" if total else ""
+        self.label_maj.setText(f"Téléchargement de la version {self.maj_info['version']}"
+                               f"{pct}  ({recu / 1048576:.0f} Mo)")
+
+    def _maj_telecharge(self, chemin):
+        self.maj_fichier = chemin
+        self.bouton_plus_tard.setText("Plus tard")
+        if self._occupe():
+            # Un enregistrement a demarre pendant le telechargement : on attend.
+            self.label_maj.setText(f"La version {self.maj_info['version']} est prête à être installée.")
+            self.bouton_maj.setText("Installer et redémarrer")
+            self.bouton_maj.show()
+            self._maj_etat_bouton()
+            return
+        self._installer_maj()
+
+    def _installer_maj(self):
+        try:
+            maj.lancer_installateur(self.maj_fichier, _racine())
+        except OSError as e:
+            self._maj_erreur(f"Lancement de l'installateur impossible : {e}")
+            return
+        # L'installateur attend la fermeture de l'application, met a jour,
+        # puis la relance.
+        self.close()
+
+    def _maj_erreur(self, message):
+        self.label_maj.setText("⚠ Mise à jour impossible : " + message)
+        self.bouton_maj.setText("Réessayer")
+        self.bouton_maj.show()
+        self.bouton_plus_tard.setText("Plus tard")
+        self._maj_etat_bouton()
+
     # ------------------------------------------------------------- iPhone --
     def _ouvrir_iphone(self):
         d = DialogueIphone(self)
@@ -668,6 +820,13 @@ class Fenetre(QMainWindow):
 class _Pont(QObject):
     fichier_recu = Signal(str)
     statut = Signal(str, bool)
+
+
+class _PontMiseAJour(QObject):
+    disponible = Signal(object)
+    progression = Signal(int, int)
+    telecharge = Signal(str)
+    erreur = Signal(str)
 
 
 class DialogueIphone(QDialog):

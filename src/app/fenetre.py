@@ -3,19 +3,20 @@ import os
 import sys
 import json
 
-from PySide6.QtCore import Qt, QTimer, QProcess, QProcessEnvironment, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QColor, QIcon
+from PySide6.QtCore import Qt, QTimer, QProcess, QProcessEnvironment, QUrl, QObject, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QTextEdit, QProgressBar, QGroupBox, QSplitter, QHeaderView, QMessageBox,
-    QAbstractItemView, QInputDialog, QFileDialog, QStackedWidget,
+    QAbstractItemView, QInputDialog, QFileDialog, QStackedWidget, QDialog, QCheckBox,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from app import enregistreur as enr
 from app.bibliotheque import Bibliotheque, formater_duree, formater_date
+from app import reception as rec
 
 LIBELLES_ETAT = {
     "nouveau": "Non transcrit",
@@ -96,6 +97,13 @@ class Fenetre(QMainWindow):
         self.ident_en_cours = None
         self.file_attente = []
 
+        # Reception depuis le telephone : le serveur tourne dans un fil
+        # secondaire, le signal ramene chaque fichier recu dans le fil de l'UI.
+        self.pont = _Pont()
+        self.pont.fichier_recu.connect(self._fichier_recu)
+        self.reception = rec.Reception(self.dossier, self.pont.fichier_recu.emit)
+        self.dialogue_reception = None
+
         self._construire()
         self._charger_peripheriques()
         self.rafraichir()
@@ -133,6 +141,10 @@ class Fenetre(QMainWindow):
 
         self.statut = self.statusBar()
         self.statut.showMessage(f"Dossier : {self.dossier}")
+        self.label_reception = QLabel()
+        self.label_reception.setContentsMargins(8, 0, 8, 0)
+        self.label_reception.hide()
+        self.statut.addPermanentWidget(self.label_reception)
         self.label_gpu = QLabel()
         self.label_gpu.setContentsMargins(8, 0, 8, 0)
         self.statut.addPermanentWidget(self.label_gpu)
@@ -210,6 +222,8 @@ class Fenetre(QMainWindow):
                                    "Transcription accélérée par la carte graphique ("
                                    + diag.get("detail", "") + ").")
                 self.pages.setCurrentWidget(self.page_principale)
+                if config.lire_parametres().get("reception_active"):
+                    self._demarrer_reception(silencieux=True)
             else:
                 self._bloquer(self._page_message(
                     "🤷 🍫", "Pas de bras, pas de chocolat !",
@@ -259,6 +273,7 @@ class Fenetre(QMainWindow):
             self.dossier = choisi
             self.biblio = Bibliotheque(choisi)
             self.enregistreur = enr.Enregistreur(choisi)
+            self.reception.dossier = choisi
         except Exception as ex:
             QMessageBox.critical(self, "Dossier inutilisable", str(ex))
             return
@@ -343,7 +358,9 @@ class Fenetre(QMainWindow):
         self.bouton_dossier = QPushButton("Ouvrir le dossier")
         self.bouton_dossier.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self.dossier)))
-        for b in (self.bouton_transcrire, self.bouton_renommer, self.bouton_dossier):
+        self.bouton_iphone = QPushButton("📱 Recevoir depuis l'iPhone")
+        self.bouton_iphone.clicked.connect(self._ouvrir_reception)
+        for b in (self.bouton_transcrire, self.bouton_renommer, self.bouton_dossier, self.bouton_iphone):
             h.addWidget(b)
         h.addStretch()
         v.addLayout(h)
@@ -527,6 +544,9 @@ class Fenetre(QMainWindow):
             QMessageBox.information(self, "Transcription",
                                     "Sélectionnez d'abord un enregistrement.")
             return
+        self._mettre_en_file(ident)
+
+    def _mettre_en_file(self, ident):
         if ident in self.file_attente or ident == self.ident_en_cours:
             return
         self.file_attente.append(ident)
@@ -614,7 +634,168 @@ class Fenetre(QMainWindow):
             self.enregistreur.arreter()
         if self.proc is not None:
             self.proc.kill()
+        self.reception.arreter()
         ev.accept()
+
+    # ------------------------------------------------------------- iPhone --
+    def _demarrer_reception(self, silencieux=False):
+        try:
+            self.reception.demarrer()
+        except Exception as ex:
+            if not silencieux:
+                QMessageBox.warning(self, "Réception", str(ex))
+            return False
+        self.label_reception.setText("📱 Réception iPhone active")
+        self.label_reception.setToolTip(f"Port {self.reception.port}, adresse {rec.ip_locale()}")
+        self.label_reception.show()
+        return True
+
+    def _arreter_reception(self):
+        self.reception.arreter()
+        self.label_reception.hide()
+
+    def _ouvrir_reception(self):
+        if not self._demarrer_reception():
+            return
+        d = DialogueReception(self)
+        self.dialogue_reception = d
+        d.exec()
+        self.dialogue_reception = None
+        if not config.lire_parametres().get("reception_active"):
+            self._arreter_reception()
+
+    def _fichier_recu(self, chemin):
+        ident = os.path.splitext(os.path.basename(chemin))[0]
+        self.rafraichir()
+        self._selectionner(ident)
+        self.statut.showMessage(f"Reçu depuis le téléphone : {os.path.basename(chemin)}", 10000)
+        if self.dialogue_reception:
+            self.dialogue_reception.signaler(os.path.basename(chemin))
+        if config.lire_parametres().get("reception_auto", True):
+            self._mettre_en_file(ident)
+
+
+class _Pont(QObject):
+    fichier_recu = Signal(str)
+
+
+class DialogueReception(QDialog):
+    """QR code a scanner avec l'iPhone, et reglages de la reception."""
+
+    def __init__(self, fenetre):
+        super().__init__(fenetre)
+        self.reception = fenetre.reception
+        self.setWindowTitle("Recevoir depuis l'iPhone")
+        self.setMinimumWidth(660)
+        p = config.lire_parametres()
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 18, 20, 16)
+        haut = QHBoxLayout()
+        self.qr = QLabel()
+        self.qr.setFixedSize(236, 236)
+        self.qr.setAlignment(Qt.AlignCenter)
+        self.qr.setStyleSheet("background:white; border-radius:8px; color:#111827;")
+        haut.addWidget(self.qr)
+        haut.addSpacing(16)
+        droite = QVBoxLayout()
+        titre = QLabel("Envoyer un enregistrement de l'iPhone")
+        f = QFont(); f.setPointSize(13); f.setBold(True)
+        titre.setFont(f)
+        droite.addWidget(titre)
+        etapes = QLabel(
+            "1. L'iPhone et cet ordinateur sont sur le <b>même Wi-Fi</b>.<br>"
+            "2. Ouvrez l'<b>Appareil photo</b> de l'iPhone, visez le QR code, touchez le lien.<br>"
+            "3. Sur la page, choisissez un enregistrement du Dictaphone : il arrive ici "
+            "et se transcrit.<br><br>"
+            "La page explique aussi comment créer les <b>raccourcis iPhone</b> "
+            "(envoi en deux touches, bouton « Enregistrer un appel »).")
+        etapes.setWordWrap(True)
+        etapes.setTextFormat(Qt.RichText)
+        droite.addWidget(etapes)
+        self.avertissement = QLabel()
+        self.avertissement.setWordWrap(True)
+        self.avertissement.setStyleSheet("color:#b45309;")
+        droite.addWidget(self.avertissement)
+        droite.addStretch()
+        haut.addLayout(droite, 1)
+        v.addLayout(haut)
+
+        self.adresse = QLabel()
+        self.adresse.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.adresse.setStyleSheet("color:#9ca3af; font-family:Consolas,monospace;")
+        v.addWidget(self.adresse)
+        v.addSpacing(6)
+
+        self.case_auto = QCheckBox("Transcrire automatiquement les enregistrements reçus")
+        self.case_auto.setChecked(p.get("reception_auto", True))
+        self.case_auto.toggled.connect(lambda on: config.ecrire_parametre("reception_auto", on))
+        self.case_active = QCheckBox("Rester à l'écoute tant que l'application est ouverte "
+                                     "(nécessaire pour les raccourcis iPhone)")
+        self.case_active.setChecked(bool(p.get("reception_active")))
+        self.case_active.toggled.connect(lambda on: config.ecrire_parametre("reception_active", on))
+        v.addWidget(self.case_auto)
+        v.addWidget(self.case_active)
+
+        note = QLabel("🔒 Les fichiers passent directement de l'iPhone à l'ordinateur, sans Internet. "
+                      "Seul un appareil qui a scanné ce QR code peut envoyer des fichiers."
+                      + ("<br>Si Windows demande d'autoriser Python dans le pare-feu, acceptez "
+                         "pour les <b>réseaux privés</b>." if sys.platform == "win32" else ""))
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.RichText)
+        note.setStyleSheet("color:#9ca3af;")
+        v.addWidget(note)
+
+        self.recus = QLabel()
+        self.recus.setStyleSheet("color:#15803d; font-weight:bold;")
+        v.addWidget(self.recus)
+
+        bas = QHBoxLayout()
+        nouveau = QPushButton("Nouveau code secret…")
+        nouveau.clicked.connect(self._nouvelle_cle)
+        fermer = QPushButton("Fermer")
+        fermer.setDefault(True)
+        fermer.clicked.connect(self.accept)
+        bas.addWidget(nouveau)
+        bas.addStretch()
+        bas.addWidget(fermer)
+        v.addLayout(bas)
+        self._afficher()
+
+    def _afficher(self):
+        import io
+        import segno
+        ip = rec.ip_locale()
+        if not ip:
+            self.qr.setText("Aucun réseau")
+            self.adresse.setText("")
+            self.avertissement.setText("Cet ordinateur n'est connecté à aucun réseau.")
+            return
+        url = self.reception.url_page(ip)
+        tampon = io.BytesIO()
+        segno.make(url, error="m").save(tampon, kind="png", scale=6, border=2)
+        pix = QPixmap()
+        pix.loadFromData(tampon.getvalue(), "PNG")
+        self.qr.setPixmap(pix.scaled(228, 228, Qt.KeepAspectRatio, Qt.FastTransformation))
+        self.adresse.setText(url)
+        precedente = config.lire_parametres().get("reception_derniere_ip")
+        if precedente and precedente != ip:
+            self.avertissement.setText(
+                f"L'adresse de l'ordinateur a changé ({precedente} → {ip}) : "
+                "rescannez le QR code et mettez à jour l'adresse de vos raccourcis iPhone.")
+        config.ecrire_parametre("reception_derniere_ip", ip)
+
+    def _nouvelle_cle(self):
+        r = QMessageBox.question(
+            self, "Nouveau code secret",
+            "Les pages et raccourcis iPhone configurés avec l'ancien code cesseront de "
+            "fonctionner. Continuer ?")
+        if r == QMessageBox.Yes:
+            self.reception.nouvelle_cle()
+            self._afficher()
+
+    def signaler(self, nom):
+        self.recus.setText("✓ Reçu : " + nom)
 
 
 def _chemin_icone():

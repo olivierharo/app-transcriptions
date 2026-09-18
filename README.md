@@ -104,6 +104,33 @@ Le second mode enregistre deux fichiers (`…moi.wav`, `…correspondant.wav`) :
 boucle WASAPI sous Windows, source « monitor » PulseAudio/PipeWire sous Ubuntu
 (via `parec`). Chaque piste ne contenant qu'une voix, l'attribution est certaine.
 
+### Recevoir depuis l'iPhone
+
+Bouton **« 📱 Recevoir depuis l'iPhone »** : l'application affiche un QR code.
+L'iPhone (même Wi-Fi) le scanne avec l'Appareil photo, et Safari ouvre une page
+servie par l'ordinateur lui-même. On y choisit un enregistrement du Dictaphone,
+qui arrive dans la liste et se transcrit automatiquement.
+
+- **Aucun cloud** : le fichier va directement de l'iPhone au PC, sur le réseau
+  local. Chaque requête doit porter une clé secrète (128 bits) contenue dans le
+  QR code ; « Nouveau code secret… » la renouvelle.
+- **Raccourcis iPhone**, expliqués pas à pas sur la page (app *Raccourcis*,
+  livrée avec l'iPhone, aucun App Store) :
+  - *Envoyer à Transcriptions* — depuis le bouton Partager du Dictaphone ;
+  - *Enregistrer un appel* — bouton sur l'écran d'accueil qui enregistre, garde
+    une copie sur l'iPhone, puis envoie.
+
+  Ils demandent que la réception reste active : cocher « Rester à l'écoute tant
+  que l'application est ouverte ».
+- Le serveur écoute sur le port **47800** (ou le suivant libre, mémorisé), et
+  seulement quand la fenêtre de réception est ouverte ou l'option cochée.
+- Sous Windows, accepter la demande du pare-feu pour les **réseaux privés**.
+- Si l'adresse IP du PC change (box qui en attribue une nouvelle), la fenêtre le
+  signale : rescanner le QR code et mettre à jour l'adresse des raccourcis. Une
+  réservation d'adresse (bail DHCP fixe) dans la box évite ce cas.
+- Enregistrer directement dans la page web n'est pas possible : Safari réserve
+  le micro aux sites HTTPS. On passe donc par le Dictaphone ou par le raccourci.
+
 ---
 
 ## État du projet
@@ -277,6 +304,7 @@ src/
     ├── enregistreur.py capture 16 kHz mono, une ou deux pistes
     ├── bibliotheque.py index des enregistrements, renommage disque
     ├── moteur.py       WhisperX en sous-processus, progression en JSON
+    ├── reception.py    serveur local + page web : envoi depuis l'iPhone
     └── prechargement.py  téléchargement des modèles pendant l'installation
 ```
 

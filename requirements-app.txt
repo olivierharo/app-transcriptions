@@ -25,3 +25,6 @@ sounddevice>=0.5
 PyAudioWPatch>=0.2.12; sys_platform == "win32"
 numpy
 av
+
+# QR code de la reception depuis l'iPhone (pur Python, sans dependance)
+segno>=1.6
